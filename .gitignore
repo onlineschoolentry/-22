@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.csv
+*.log
+*.png
+.DS_Store
+certs/
+*.pem
+_text_test.png

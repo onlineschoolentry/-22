@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ko">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kinematic Measurement Console</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">Kinematic Measurement Console</div>
+    <div class="status">
+      <span class="statusLabel">CAMERA</span>
+      <span id="statusText">OFF</span>
+    </div>
+  </header>
+
+  <main class="app">
+    <section class="workbench">
+      <div class="cameraPanel">
+        <video id="video" playsinline muted hidden></video>
+        <canvas id="videoCanvas"></canvas>
+        <div class="cameraActions">
+          <button id="startCamera">Start</button>
+          <button id="phoneCamera">Phone Camera</button>
+          <button id="pickColor">Sample Color</button>
+          <button id="calibrate">Calibrate</button>
+          <button id="reset">Reset</button>
+          <button id="saveCsv">Export CSV</button>
+          <button id="discover">Fit Model</button>
+        </div>
+      </div>
+
+      <aside class="controls">
+        <label>
+          Experiment
+          <select id="experiment">
+            <option value="pendulum">Pendulum: theta, omega, damping</option>
+            <option value="freefall">Free fall: y, vy, ay, g</option>
+            <option value="projectile">Projectile: x-y, speed, acceleration</option>
+            <option value="linear_motion">Linear cart: x, vx, ax, force</option>
+            <option value="spring_mass">Spring-mass: displacement, velocity, acceleration</option>
+            <option value="circular_motion">Circular: position, speed, centripetal acceleration</option>
+            <option value="motion2d">Generic 2D tracking</option>
+          </select>
+        </label>
+
+        <div class="modePanel">
+          <div id="modeTitle" class="modeTitle"></div>
+          <div id="modeSummary" class="modeSummary"></div>
+          <div id="modeMetrics" class="modeMetrics"></div>
+        </div>
+
+        <label>
+          Marker
+          <select id="color">
+            <option value="orange">orange</option>
+            <option value="green">green</option>
+            <option value="red">red</option>
+            <option value="blue">blue</option>
+            <option value="yellow">yellow</option>
+            <option value="magenta">magenta</option>
+            <option value="pink">pink</option>
+          </select>
+        </label>
+
+        <label id="lengthLabel">
+          String length, one side (m)
+          <input id="length" type="number" value="0.22" step="0.01" min="0.1">
+          <span class="fieldHint">22 cm = 0.22 m. V calibration updates this to L_eff.</span>
+        </label>
+
+        <label id="massLabel">
+          Mass (kg)
+          <input id="mass" type="number" value="0.05" step="0.01" min="0.001">
+        </label>
+
+        <label id="scaleDistanceLabel">
+          Scale reference (m)
+          <input id="scaleDistance" type="number" value="1.0" step="0.1" min="0.01">
+        </label>
+
+        <label id="lambdaLabel">
+          STLSQ lambda
+          <input id="lambdaThreshold" type="number" value="0.30" step="0.01" min="0">
+        </label>
+
+        <div class="readout" id="readout"></div>
+      </aside>
+    </section>
+
+    <section class="plots">
+      <canvas id="plotTheta"></canvas>
+      <canvas id="plotOmega"></canvas>
+      <canvas id="plotAlpha"></canvas>
+      <canvas id="plotPhase"></canvas>
+    </section>
+
+    <section class="equation">
+      <div class="equationTitle">Model Fit</div>
+      <pre id="equationOutput">Pendulum mode fits theta_ddot = f(theta, omega). Other modes export kinematic time series.</pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+
+</html>

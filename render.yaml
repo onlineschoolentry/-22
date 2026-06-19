@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: physicslens
+    runtime: python
+    plan: free
+    # web_server is decoupled from cv2/cryptography, so the cloud build only
+    # needs the numerical stack. Render terminates TLS, so we run plain --http.
+    buildCommand: pip install numpy scipy pandas
+    startCommand: python web_server.py --http --port $PORT
