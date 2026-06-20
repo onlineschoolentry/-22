@@ -35,7 +35,9 @@ def run_pysr_symbolic(theta, omega, acc, seed=0):
     model = PySRRegressor(
         niterations=80,
         binary_operators=["+", "-", "*"],
-        unary_operators=["sin", "cos"],
+        # rich unary set so the search *chooses* sin among real alternatives
+        # (square, exp, cos) rather than being handed it.
+        unary_operators=["sin", "cos", "exp", "square"],
         model_selection="best",
         maxsize=18,
         random_state=seed,
@@ -68,6 +70,7 @@ def run_gp_symbolic(theta, omega, acc, generations=25, seed=0):
     the candidate basis so g/L and gamma come out precisely.
     """
     from gplearn.genetic import SymbolicRegressor
+    from gplearn.functions import make_function
 
     # gplearn 0.4.2 calls the removed sklearn private _validate_data; shim it.
     if not hasattr(SymbolicRegressor, "_validate_data"):
@@ -80,11 +83,23 @@ def run_gp_symbolic(theta, omega, acc, generations=25, seed=0):
 
         SymbolicRegressor._validate_data = _validate_data
 
+    # Extra candidate forms so the GP *chooses* sin among alternatives
+    # (square = theta^2, exp = exp(theta)) -- matches the proposal's claim that
+    # the search selects sin(theta) over theta^2 / exp(theta).
+    def _p_exp(x):
+        return np.where(np.abs(x) < 10.0, np.exp(np.clip(x, -10, 10)), 0.0)
+
+    def _p_square(x):
+        return np.where(np.abs(x) < 1e5, x * x, 0.0)
+
+    exp_fn = make_function(function=_p_exp, name="exp", arity=1)
+    sq_fn = make_function(function=_p_square, name="square", arity=1)
+
     X = np.stack([theta, omega], axis=1)
     est = SymbolicRegressor(
         population_size=5000,
         generations=generations,
-        function_set=["add", "sub", "mul", "sin", "cos"],
+        function_set=["add", "sub", "mul", "sin", "cos", exp_fn, sq_fn],
         const_range=(-20.0, 20.0),
         parsimony_coefficient=5e-4,  # low penalty so sin(theta) is not pruned to theta
         metric="mse",
