@@ -233,6 +233,8 @@ const app = {
   // Marker color picked by click (overrides the preset dropdown when set).
   markerHsv: null,
   targetSeed: null,
+  targetSeedFrames: 0,
+  selectionPausedVideo: false,
   picking: false,
   // Spatial lock: stick to the blob near the last position, ignore far
   // same-color objects. Released after the target is lost for a while.
@@ -815,6 +817,7 @@ function trackMarker() {
   }
 
   const blob = bestBlob(mask, quality, cols, rows, x0, y0, step, locked, W, Hh);
+  if (app.targetSeedFrames > 0) app.targetSeedFrames -= 1;
   if (!blob || blob.count < 8) {
     app.lostFrames += 1;
     if (app.lostFrames > app.reacquireAfter) app.lastPos = null;
@@ -912,7 +915,10 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
       }
       if (app.targetSeed) {
         const d = Math.hypot(bx - app.targetSeed.x, by - app.targetSeed.y);
-        score += Math.max(0, 140 - d * 0.7);
+        if (app.targetSeedFrames > 0 && d > 240) continue;
+        score += app.targetSeedFrames > 0
+          ? Math.max(0, 320 - d * 1.05)
+          : Math.max(0, 120 - d * 0.45);
       }
 
       if (!best || score > best.score) best = { x: bx, y: by, count, score, confidence: avgQ };
@@ -970,20 +976,33 @@ function hueDistance(a, b) {
 }
 
 function pickColorAt(px, py) {
+  drawCurrentSourceFrame();
   const half = 12;
   const x0 = Math.max(0, Math.round(px) - half);
   const y0 = Math.max(0, Math.round(py) - half);
   const w = Math.min(canvas.width, Math.round(px) + half) - x0;
   const h = Math.min(canvas.height, Math.round(py) + half) - y0;
-  if (w <= 0 || h <= 0) return;
+  if (w <= 0 || h <= 0) return false;
 
   const d = ctx.getImageData(x0, y0, w, h).data;
+  const centerHues = [];
+  const centerX = Math.round(px) - x0;
+  const centerY = Math.round(py) - y0;
+  for (let yy = Math.max(0, centerY - 2); yy <= Math.min(h - 1, centerY + 2); yy++) {
+    for (let xx = Math.max(0, centerX - 2); xx <= Math.min(w - 1, centerX + 2); xx++) {
+      const i = (yy * w + xx) * 4;
+      const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
+      if (hsv[1] >= 45 && hsv[2] >= 35) centerHues.push(hsv[0]);
+    }
+  }
+  const centerHue = centerHues.length ? circularHueMean(centerHues) : null;
   const hs = [];
   const ss = [];
   const vs = [];
   for (let i = 0; i < d.length; i += 4) {
     const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
     if (hsv[1] < 55 || hsv[2] < 35) continue;
+    if (centerHue !== null && hueDistance(hsv[0], centerHue) > 22) continue;
     hs.push(hsv[0]);
     ss.push(hsv[1]);
     vs.push(hsv[2]);
@@ -1003,6 +1022,11 @@ function pickColorAt(px, py) {
   const hMed = circularHueMean(hs);
   const sMed = median(ss);
   const vMed = median(vs);
+
+  if (!Number.isFinite(hMed) || !Number.isFinite(sMed) || !Number.isFinite(vMed)) {
+    setStatus("BAD SAMPLE", false);
+    return false;
+  }
 
   // Hue is illumination-invariant, so keep it tight; brightness/saturation swing
   // a lot as the bob moves between lit and shadowed parts of its arc, so allow a
@@ -1031,10 +1055,35 @@ function pickColorAt(px, py) {
   }
   app.markerHsv = m;
   app.targetSeed = { x: px, y: py };
+  app.targetSeedFrames = 90;
   app.lastPos = { x: px, y: py };
   app.smoothPos = { x: px, y: py };
   app.lostFrames = 0;
-  setStatus(`SAMPLED H=${Math.round(hMed)}`, true);
+  drawSampleFeedback(px, py);
+  setStatus(`SAMPLED H=${Math.round(hMed)} S=${Math.round(sMed)} V=${Math.round(vMed)}`, true);
+  return true;
+}
+
+function drawCurrentSourceFrame() {
+  resizeCanvas();
+  if (app.phoneMode && app.phoneImageReady) {
+    ctx.drawImage(app.phoneImage, 0, 0, canvas.width, canvas.height);
+    return;
+  }
+  if ((app.videoFileMode || app.stream) && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  }
+}
+
+function drawSampleFeedback(px, py) {
+  ctx.save();
+  ctx.strokeStyle = "#2cff61";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(px, py, 18, 0, Math.PI * 2);
+  ctx.stroke();
+  drawCross(px, py, 9);
+  ctx.restore();
 }
 
 function circularHueMean(values) {
@@ -1429,6 +1478,7 @@ function fitPlotCanvas(plotCanvas) {
 
 function startCalibration() {
   app.picking = false;
+  pauseVideoForSelection();
   if (isPendulumMode()) {
     app.calibration = "pendulumLeftAnchor";
     app.vLeft = null;
@@ -1443,7 +1493,24 @@ function startCalibration() {
 function startPickColor() {
   app.picking = true;
   app.calibration = null;
+  pauseVideoForSelection();
   setStatus("SAMPLE", false);
+}
+
+function pauseVideoForSelection() {
+  if (!app.videoFileMode || video.paused) {
+    app.selectionPausedVideo = false;
+    return;
+  }
+  video.pause();
+  app.selectionPausedVideo = true;
+  drawCurrentSourceFrame();
+}
+
+function resumeVideoAfterSelection() {
+  if (!app.videoFileMode || !app.selectionPausedVideo) return;
+  app.selectionPausedVideo = false;
+  video.play().catch(() => setStatus("VIDEO PAUSED", false));
 }
 
 function handleCanvasClick(ev) {
@@ -1455,8 +1522,9 @@ function handleCanvasClick(ev) {
   };
 
   if (app.picking) {
-    pickColorAt(p.x, p.y);
+    const ok = pickColorAt(p.x, p.y);
     app.picking = false;
+    if (ok) resumeVideoAfterSelection();
     return;
   }
 
@@ -1484,6 +1552,7 @@ function handleCanvasClick(ev) {
     app.smoothPos = { x: p.x, y: p.y };
     app.lostFrames = 0;
     setStatus("RUN", true);
+    resumeVideoAfterSelection();
     return;
   }
   if (app.calibration === "motionOrigin") {
@@ -1499,6 +1568,7 @@ function handleCanvasClick(ev) {
     app.calibration = null;
     resetExperiment();
     setStatus("RUN", true);
+    resumeVideoAfterSelection();
   }
 }
 
@@ -1781,6 +1851,7 @@ els.experiment.addEventListener("change", () => {
 els.color.addEventListener("change", () => {
   app.markerHsv = null;
   app.targetSeed = null;
+  app.targetSeedFrames = 0;
   resetExperiment();
   setStatus(`COLOR ${els.color.value.toUpperCase()}`, false);
 });
