@@ -113,6 +113,19 @@ def build_pendulum_library(theta: np.ndarray, omega: np.ndarray) -> tuple[np.nda
     return np.column_stack(features), names
 
 
+def build_oscillator_library(x: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """
+    1D 진동(용수철 등) 후보항 라이브러리.
+    기대식: x_ddot = -(k/m) x - c v  (선형 복원). 비선형 후보(x^2, x^3)도 둬서
+    데이터가 선형 x를 고르는지 확인.
+    """
+    x = np.asarray(x, dtype=float)
+    v = np.asarray(v, dtype=float)
+    features = [np.ones_like(x), x, x * x, x * x * x, v, x * v]
+    names = ["1", "x", "x^2", "x^3", "v", "x*v"]
+    return np.column_stack(features), names
+
+
 def stlsq(
     theta_lib: np.ndarray,
     target: np.ndarray,

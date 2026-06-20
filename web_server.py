@@ -260,7 +260,8 @@ def neural_payload(payload: dict) -> dict:
     except Exception as exc:
         raise RuntimeError(f"Neural ODE deps unavailable (run locally with torch): {exc}")
     frac = float(payload.get("frac", 0.5))
-    return discover_from_series(t, theta, frac=frac)
+    mode = payload.get("mode", "pendulum")
+    return discover_from_series(t, theta, frac=frac, mode=mode)
 
 
 def serve(host: str, port: int, use_https: bool):

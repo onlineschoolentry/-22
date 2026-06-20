@@ -95,49 +95,75 @@ def gp_to_sympy(program):
         return f"(simplify failed: {exc})"
 
 
-def discover_from_series(t, theta_meas, frac=0.5):
+def discover_from_series(t, pos_meas, frac=0.5, mode="pendulum"):
     """
-    Full pipeline on a (time, measured-theta) series -> result dict.
-    Used by the local web backend's Neural ODE discovery endpoint.
+    Full pipeline on a (time, position) series -> result dict.
+    mode="pendulum": restoring sin(theta), extracts g/L.
+    mode="spring":   restoring linear x, extracts k/m (Hooke).
+    The Neural ODE + GP-SR core is identical; only the candidate library and the
+    coefficient-refinement basis differ.
     """
     from smoother import KinematicSmoother, estimate_measurement_noise
-    from equation_discovery import build_pendulum_library, stlsq
+    from equation_discovery import build_pendulum_library, build_oscillator_library, stlsq
 
     t = np.asarray(t, float)
-    theta_meas = np.asarray(theta_meas, float)
+    pos_meas = np.asarray(pos_meas, float)
     cut = int(len(t) * frac)
-    t, theta_meas = t[:cut], theta_meas[:cut]
+    t, pos_meas = t[:cut], pos_meas[:cut]
     dt = float(np.median(np.diff(t)))
-    sm = KinematicSmoother(sigma_meas=estimate_measurement_noise(theta_meas))
-    sm.tune_q(theta_meas, t=t)
-    s = sm.smooth(theta_meas, t=t, dt=dt)
+    sm = KinematicSmoother(sigma_meas=estimate_measurement_noise(pos_meas))
+    sm.tune_q(pos_meas, t=t)
+    s = sm.smooth(pos_meas, t=t, dt=dt)
     sl = slice(15, -15)
-    theta, omega, accel = s.s[sl], s.s_dot[sl], s.s_ddot[sl]
+    pos, vel, accel = s.s[sl], s.s_dot[sl], s.s_ddot[sl]
     tcut = t[sl]
 
-    # STLSQ baseline + period cross-checks
-    lib, names = build_pendulum_library(theta, omega)
-    r = stlsq(lib, accel, names, lambda_threshold=2.0)
-    gl_stlsq = -dict(zip(r.feature_names, r.coefficients)).get("sin(theta)", 0.0)
-    x = theta - theta.mean()
-    zc = np.where(np.diff(np.sign(x)))[0]
+    # period cross-check (same for both)
+    xc = pos - pos.mean()
+    zc = np.where(np.diff(np.sign(xc)))[0]
     period = 2 * np.median(np.diff(tcut[zc])) if len(zc) > 3 else float("nan")
-    gl_period = (2 * np.pi / period) ** 2 if period and period > 0 else float("nan")
+    w2_period = (2 * np.pi / period) ** 2 if period and period > 0 else float("nan")
 
-    # Neural ODE + GP-SR
-    func = train_neural_ode(tcut, theta, omega, iters=1500, lr=1.5e-3,
-                            window=10, verbose=False)
-    thg, omg, acc = sample_vector_field(func, theta, omega, n_grid=600)
-    est, coef = run_gp_symbolic(thg, omg, acc)
+    # Neural ODE + GP-SR (generic)
+    func = train_neural_ode(tcut, pos, vel, iters=1500, lr=1.5e-3, window=10, verbose=False)
+    pg, vg, acc = sample_vector_field(func, pos, vel, n_grid=600)
+    est, _ = run_gp_symbolic(pg, vg, acc)
 
+    if mode == "spring":
+        # refine on linear basis [x, v, 1] -> k/m, damping
+        basis = np.stack([pg, vg, np.ones_like(pg)], axis=1)
+        coef, *_ = np.linalg.lstsq(basis, acc, rcond=None)
+        lib, names = build_oscillator_library(pos, vel)
+        r = stlsq(lib, accel, names, lambda_threshold=1.0)
+        stlsq_x = -dict(zip(r.feature_names, r.coefficients)).get("x", 0.0)
+        return {
+            "mode": "spring",
+            "equation": f"x_ddot = {coef[0]:+.2f}*x {coef[1]:+.3f}*v",
+            "const_neural_ode": float(-coef[0]),    # k/m
+            "const_stlsq": float(stlsq_x),
+            "const_period": float(w2_period),
+            "const_name": "k/m",
+            "damping": float(-coef[1]),
+            "amplitude": float(np.max(np.abs(pos - pos.mean()))),
+            "samples": int(len(pos)),
+        }
+
+    # pendulum
+    basis = np.stack([np.sin(pg), vg, np.ones_like(pg)], axis=1)
+    coef, *_ = np.linalg.lstsq(basis, acc, rcond=None)
+    lib, names = build_pendulum_library(pos, vel)
+    r = stlsq(lib, accel, names, lambda_threshold=2.0)
+    stlsq_sin = -dict(zip(r.feature_names, r.coefficients)).get("sin(theta)", 0.0)
     return {
+        "mode": "pendulum",
         "equation": f"theta_ddot = {coef[0]:+.2f}*sin(theta) {coef[1]:+.3f}*omega",
-        "g_over_L_neural_ode": float(-coef[0]),
-        "gamma": float(-coef[1]),
-        "g_over_L_stlsq": float(gl_stlsq),
-        "g_over_L_period": float(gl_period),
-        "amplitude_deg": float(np.degrees(np.max(np.abs(theta - theta.mean())))),
-        "samples": int(len(theta)),
+        "const_neural_ode": float(-coef[0]),        # g/L
+        "const_stlsq": float(stlsq_sin),
+        "const_period": float(w2_period),
+        "const_name": "g/L",
+        "damping": float(-coef[1]),
+        "amplitude": float(np.degrees(np.max(np.abs(pos - pos.mean())))),
+        "samples": int(len(pos)),
     }
 
 

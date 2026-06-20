@@ -1643,6 +1643,27 @@ function fitPlotCanvas(plotCanvas) {
   }
 }
 
+function clearAllPlots() {
+  const p = profile();
+  clearPlot(els.plotTheta, `${p.primary[0]} (${p.primary[1]})`);
+  clearPlot(els.plotOmega, `${p.velocity[0]} (${p.velocity[1]})`);
+  clearPlot(els.plotAlpha, `${p.acceleration[0]} (${p.acceleration[1]})`);
+  clearPlot(els.plotPhase, `${p.primary[0]}-${p.velocity[0]} phase`);
+}
+
+function clearPlot(plotCanvas, title) {
+  fitPlotCanvas(plotCanvas);
+  const c = plotCanvas.getContext("2d");
+  c.clearRect(0, 0, plotCanvas.width, plotCanvas.height);
+  c.fillStyle = "#181b1f";
+  c.fillRect(0, 0, plotCanvas.width, plotCanvas.height);
+  c.strokeStyle = "#30363d";
+  c.strokeRect(0, 0, plotCanvas.width, plotCanvas.height);
+  c.fillStyle = "#e7edf3";
+  c.font = "14px Segoe UI";
+  c.fillText(title, 10, 22);
+}
+
 function startCalibration() {
   app.picking = false;
   pauseVideoForSelection();
@@ -1770,6 +1791,36 @@ function resetExperiment() {
     }
   }
   currentEstimator();
+  clearAllPlots();
+  updateReadout({ detected: false });
+}
+
+function resetExperimentSession() {
+  app.calibration = null;
+  app.picking = false;
+  app.pivot = null;
+  app.vLeft = null;
+  app.vRight = null;
+  app.restAngle = 0;
+  app.stringPixels = 0;
+  app.origin = null;
+  app.scaleStart = null;
+  app.pixelsPerMeter = 300;
+  app.markerHsv = null;
+  app.targetSeed = null;
+  app.targetSeedFrames = 0;
+  app.lastMeasurement = null;
+  app.selectionPausedVideo = false;
+  resetExperimentInputs();
+  resetExperiment();
+  setStatus("MODE RESET", false);
+}
+
+function resetExperimentInputs() {
+  els.length.value = "0.22";
+  els.mass.value = "0.05";
+  els.scaleDistance.value = "1.0";
+  els.lambdaThreshold.value = "0.30";
 }
 
 function csvText() {
@@ -1905,8 +1956,12 @@ async function discoverEquation() {
 }
 
 async function discoverNeural() {
-  if (!isPendulumMode()) {
-    els.equationOutput.textContent = `${profile().name}: Neural ODE 발견은 진자 모드 전용입니다.`;
+  const mode = isPendulumMode()
+    ? "pendulum"
+    : (els.experiment.value === "spring_mass" ? "spring" : null);
+  if (!mode) {
+    els.equationOutput.textContent =
+      `${profile().name}: Neural ODE 발견은 진자/용수철(진동) 모드 전용입니다.`;
     return;
   }
   if (app.history.length < 100) {
@@ -1918,20 +1973,21 @@ async function discoverNeural() {
     const res = await fetch("/api/discover_neural", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ frac: 0.5, rows: app.history }),
+      body: JSON.stringify({ frac: 0.5, mode, rows: app.history }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "analysis failed");
+    const isSpring = data.mode === "spring";
     els.equationOutput.textContent = [
       "[Neural ODE + 유전프로그래밍 기호회귀]",
       data.equation,
       "",
-      "g/L 교차검증 (3가지 독립 방법):",
-      `  Neural ODE + GP-SR : ${data.g_over_L_neural_ode.toFixed(2)}`,
-      `  STLSQ (SINDy)      : ${data.g_over_L_stlsq.toFixed(2)}`,
-      `  Period (2pi/T)^2   : ${data.g_over_L_period.toFixed(2)}`,
-      `gamma (damping)      : ${data.gamma.toFixed(4)}`,
-      `amplitude            : ${data.amplitude_deg.toFixed(0)} deg`,
+      `${data.const_name} 교차검증 (3가지 독립 방법):`,
+      `  Neural ODE + GP-SR : ${data.const_neural_ode.toFixed(2)}`,
+      `  STLSQ (SINDy)      : ${data.const_stlsq.toFixed(2)}`,
+      `  Period (2pi/T)^2   : ${data.const_period.toFixed(2)}`,
+      `damping              : ${data.damping.toFixed(4)}`,
+      `amplitude            : ${data.amplitude.toFixed(isSpring ? 3 : 0)}${isSpring ? "" : " deg"}`,
     ].join("\n");
   } catch (err) {
     els.equationOutput.textContent =
@@ -2120,7 +2176,7 @@ els.discover.addEventListener("click", fitExperimentModel);
 if (els.discoverNeural) els.discoverNeural.addEventListener("click", discoverNeural);
 canvas.addEventListener("click", handleCanvasClick);
 els.experiment.addEventListener("change", () => {
-  resetExperiment();
+  resetExperimentSession();
   updateExperimentUi();
   els.equationOutput.textContent = experimentNote();
 });
