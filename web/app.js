@@ -7,6 +7,9 @@ const els = {
   statusText: document.getElementById("statusText"),
   startCamera: document.getElementById("startCamera"),
   phoneCamera: document.getElementById("phoneCamera"),
+  uploadVideo: document.getElementById("uploadVideo"),
+  videoFile: document.getElementById("videoFile"),
+  slowmo: document.getElementById("slowmo"),
   pickColor: document.getElementById("pickColor"),
   calibrate: document.getElementById("calibrate"),
   reset: document.getElementById("reset"),
@@ -203,6 +206,8 @@ const app = {
   phoneImageReady: false,
   phonePolling: false,
   phoneLastFrame: 0,
+  videoFileMode: false,
+  lastMediaTime: null,
   running: false,
   lastTs: null,
   frameCount: 0,
@@ -290,7 +295,7 @@ class PendulumEKF {
   }
 
   setDt(dt) {
-    this.dt = clamp(dt, 1 / 120, 1 / 10);
+    this.dt = clamp(dt, 1 / 2000, 0.5);
   }
 
   deriv(x) {
@@ -391,7 +396,7 @@ class Motion2DKF {
   }
 
   setDt(dt) {
-    this.dt = clamp(dt, 1 / 120, 1 / 10);
+    this.dt = clamp(dt, 1 / 2000, 0.5);
   }
 
   F() {
@@ -488,6 +493,7 @@ function currentEstimator() {
 async function startCamera() {
   if (app.stream) app.stream.getTracks().forEach((track) => track.stop());
   app.phoneMode = false;
+  app.videoFileMode = false;
   app.stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false,
@@ -505,6 +511,7 @@ function startPhoneCamera() {
     app.stream = null;
   }
   app.phoneMode = true;
+  app.videoFileMode = false;
   app.running = true;
   app.phoneImageReady = false;
   setStatus("WAIT PHONE", false);
@@ -537,6 +544,68 @@ function startPhonePolling() {
   poll();
 }
 
+async function startVideoFile(file) {
+  if (app.stream) {
+    app.stream.getTracks().forEach((track) => track.stop());
+    app.stream = null;
+  }
+  app.phoneMode = false;
+  app.videoFileMode = true;
+  app.running = true;
+  app.lastMediaTime = null;
+  resetExperiment();
+  video.srcObject = null;
+  video.src = URL.createObjectURL(file);
+  video.muted = true;
+  // Loop so the user can set color + calibration while it replays, then Reset
+  // and capture one clean pass. The loop seam has dt<0 and is skipped.
+  video.loop = true;
+  video.playbackRate = 0.6; // keep per-frame processing from dropping frames
+  setStatus("VIDEO (set color+calib, then Reset)", true);
+  await video.play();
+  if (video.requestVideoFrameCallback) {
+    video.requestVideoFrameCallback(processVideoFrame);
+  } else {
+    // Fallback: poll currentTime on rAF (less frame-accurate but works).
+    requestAnimationFrame(pollVideoFrame);
+  }
+}
+
+function processVideoFrame(now, metadata) {
+  if (!app.videoFileMode) return;
+  const slow = Math.max(1, Number(els.slowmo.value) || 1);
+  const mediaTime = metadata.mediaTime;
+  resizeCanvas();
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const result = trackMarker();
+  app.lastMeasurement = result;
+  drawOverlay(result);
+  if (result.detected && app.lastMediaTime !== null) {
+    const dt = (mediaTime - app.lastMediaTime) / slow; // video time -> real time
+    if (dt > 0) {
+      const est = currentEstimator();
+      est.setDt(dt);
+      const row = updateModel(est, result);
+      if (row) {
+        app.history.push(row);
+        if (app.history.length > 6000) app.history.shift();
+      }
+    }
+  }
+  app.lastMediaTime = mediaTime;
+  drawPlots();
+  updateReadout(result);
+  if (video.requestVideoFrameCallback) {
+    video.requestVideoFrameCallback(processVideoFrame);
+  }
+}
+
+function pollVideoFrame() {
+  if (!app.videoFileMode) return;
+  processVideoFrame(0, { mediaTime: video.currentTime });
+  requestAnimationFrame(pollVideoFrame);
+}
+
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
   const w = Math.max(320, Math.floor(rect.width));
@@ -549,6 +618,7 @@ function resizeCanvas() {
 
 function loop(ts) {
   if (!app.running) return;
+  if (app.videoFileMode) return; // video mode is driven by requestVideoFrameCallback
   resizeCanvas();
   const dt = app.lastTs ? (ts - app.lastTs) / 1000 : 1 / 30;
   app.lastTs = ts;
@@ -1495,6 +1565,11 @@ function inv2(A) {
 
 els.startCamera.addEventListener("click", () => startCamera().catch((err) => setStatus(err.message, false)));
 els.phoneCamera.addEventListener("click", startPhoneCamera);
+els.uploadVideo.addEventListener("click", () => els.videoFile.click());
+els.videoFile.addEventListener("change", (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (file) startVideoFile(file).catch((err) => setStatus(err.message, false));
+});
 els.pickColor.addEventListener("click", startPickColor);
 els.calibrate.addEventListener("click", startCalibration);
 els.reset.addEventListener("click", resetExperiment);
