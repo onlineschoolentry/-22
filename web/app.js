@@ -142,18 +142,18 @@ const cleanExperimentProfiles = {
   freefall: {
     estimator: "motion2d",
     name: "Free Fall",
-    summary: "CALIB: origin -> scale reference",
-    metrics: ["y", "vy", "ay", "g_est", "g_error"],
-    primary: ["y", "m"],
-    velocity: ["vy", "m/s"],
-    acceleration: ["ay", "m/s^2"],
+    summary: "CALIB: release point -> vertical scale endpoint",
+    metrics: ["y_down", "vy", "g_fit", "g_error", "R2"],
+    primary: ["y_down", "m"],
+    velocity: ["vy_down", "m/s"],
+    acceleration: ["g_fit", "m/s^2"],
     readout: "vertical",
   },
   projectile: {
     estimator: "motion2d",
     name: "Projectile",
-    summary: "CALIB: origin -> scale reference",
-    metrics: ["x", "y", "speed", "range", "height", "mean ay"],
+    summary: "CALIB: launch point -> scale endpoint",
+    metrics: ["x", "y", "v0", "range", "height", "g_fit"],
     primary: ["x", "m"],
     velocity: ["speed", "m/s"],
     acceleration: ["|a|", "m/s^2"],
@@ -253,8 +253,8 @@ function profile() {
 function experimentNote() {
   const notes = {
     pendulum: "Pendulum mode fits theta_ddot = f(theta, omega).",
-    freefall: "Free-fall mode estimates g from the vertical acceleration series.",
-    projectile: "Projectile mode reports range, height, speed, and vertical acceleration.",
+    freefall: "Free-fall mode fits y = y0 + v0*t + 0.5*g*t^2 with downward y positive.",
+    projectile: "Projectile mode fits x(t) and y(t) to estimate launch velocity and g.",
     linear_motion: "Linear cart mode reports mean acceleration and F = ma.",
     spring_mass: "Spring-mass mode estimates period T, angular frequency omega, and k = m omega^2.",
     circular_motion: "Circular mode compares measured acceleration with v^2/r.",
@@ -281,8 +281,12 @@ function updateExperimentUi() {
   els.lambdaLabel.classList.toggle("hidden", !pendulum);
   els.massLabel.classList.toggle("hidden", pendulum);
   els.scaleDistanceLabel.classList.toggle("hidden", pendulum);
-  els.discover.disabled = !pendulum;
-  els.discover.title = pendulum ? "Fit pendulum equation" : "Model fitting is only available for pendulum mode.";
+  els.discover.disabled = !(pendulum || isBallisticsMode());
+  els.discover.title = pendulum
+    ? "Fit pendulum equation"
+    : isBallisticsMode()
+      ? "Fit trajectory model"
+      : "Model fitting is available for pendulum, free-fall, and projectile modes.";
 }
 
 class PendulumEKF {
@@ -488,6 +492,18 @@ function isPendulumMode() {
   return profile().estimator === "pendulum";
 }
 
+function isFreefallMode() {
+  return els.experiment.value === "freefall";
+}
+
+function isProjectileMode() {
+  return els.experiment.value === "projectile";
+}
+
+function isBallisticsMode() {
+  return isFreefallMode() || isProjectileMode();
+}
+
 function currentEstimator() {
   const want = profile().estimator;
   if (!app.estimator || app.estimator.kind !== want) {
@@ -634,6 +650,12 @@ function videoLoop() {
   }
   const slow = Math.max(1, Number(els.slowmo.value) || 1);
   const mediaTime = video.currentTime;
+  if (app.lastMediaTime !== null && mediaTime < app.lastMediaTime - 0.05 && isBallisticsMode() && app.history.length > 10) {
+    video.pause();
+    setStatus("PASS DONE", true);
+    app.videoLoopHandle = requestAnimationFrame(videoLoop);
+    return;
+  }
   if (app.lastMediaTime === null || mediaTime !== app.lastMediaTime) {
     resizeCanvas();
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -781,9 +803,15 @@ function updateModel(est, result) {
   }
 
   if (!app.origin || app.calibration) return null;
+  const coords = motionCoordinates(result);
+  return est.update(coords.x, coords.y);
+}
+
+function motionCoordinates(result) {
   const x = (result.x - app.origin.x) / app.pixelsPerMeter;
-  const y = -(result.y - app.origin.y) / app.pixelsPerMeter;
-  return est.update(x, y);
+  const yPixels = result.y - app.origin.y;
+  const y = isFreefallMode() ? yPixels / app.pixelsPerMeter : -yPixels / app.pixelsPerMeter;
+  return { x, y };
 }
 
 function trackMarker() {
@@ -1180,7 +1208,7 @@ function drawOverlay(result) {
   if (app.calibration) {
     ctx.fillStyle = "#ffee00";
     ctx.font = "22px Segoe UI";
-    ctx.fillText(calibrationMessage(), 14, 34);
+    ctx.fillText(experimentCalibrationMessage(), 14, 34);
   } else if (app.picking) {
     ctx.fillStyle = "#ff5cf0";
     ctx.font = "22px Segoe UI";
@@ -1202,6 +1230,19 @@ function calibrationMessage() {
   if (app.calibration === "pendulumLeftAnchor") return "[보정] 왼쪽 상단 고정점을 클릭";
   if (app.calibration === "pendulumRightAnchor") return "[보정] 오른쪽 상단 고정점을 클릭";
   if (app.calibration === "pendulumBob") return "[보정] 정지 상태 추 중심을 클릭";
+  if (app.calibration === "motionOrigin") return "[보정] 원점/평형점을 클릭";
+  if (app.calibration === "motionScale") return "[보정] 기준 거리 끝점을 클릭";
+  return "";
+}
+
+function experimentCalibrationMessage() {
+  if (app.calibration === "pendulumLeftAnchor") return "[보정] 왼쪽 고정점을 클릭";
+  if (app.calibration === "pendulumRightAnchor") return "[보정] 오른쪽 고정점을 클릭";
+  if (app.calibration === "pendulumBob") return "[보정] 정지한 추의 중심을 클릭";
+  if (app.calibration === "motionOrigin" && isFreefallMode()) return "[보정] 낙하 시작점/공 중심을 클릭";
+  if (app.calibration === "motionScale" && isFreefallMode()) return "[보정] 아래쪽 거리 기준점을 클릭";
+  if (app.calibration === "motionOrigin" && isProjectileMode()) return "[보정] 발사 시작점/공 중심을 클릭";
+  if (app.calibration === "motionScale" && isProjectileMode()) return "[보정] 거리 기준 끝점을 클릭";
   if (app.calibration === "motionOrigin") return "[보정] 원점/평형점을 클릭";
   if (app.calibration === "motionScale") return "[보정] 기준 거리 끝점을 클릭";
   return "";
@@ -1252,28 +1293,31 @@ function updateReadout(result) {
 }
 
 function appendFreefallReadout(lines, last) {
-  const recent = app.history.slice(-120);
-  const ayAbs = recent.map((r) => Math.abs(r.ay)).filter(Number.isFinite);
-  const gEst = mean(ayAbs);
-  const gErr = Number.isFinite(gEst) ? ((gEst - 9.81) / 9.81) * 100 : NaN;
-  lines.push(`y: ${last.y.toFixed(4)} m`);
-  lines.push(`vy: ${last.vy.toFixed(4)} m/s`);
-  lines.push(`ay: ${last.ay.toFixed(4)} m/s^2`);
-  lines.push(`g_est: ${fmt(gEst)} m/s^2`);
+  const fit = freefallFit();
+  lines.push(`y_down: ${last.y.toFixed(4)} m`);
+  lines.push(`vy_down: ${last.vy.toFixed(4)} m/s`);
+  lines.push(`ay_kalman: ${last.ay.toFixed(4)} m/s^2`);
+  lines.push(`g_fit: ${fmt(fit.g)} m/s^2`);
+  lines.push(`v0_fit: ${fmt(fit.v0)} m/s`);
+  lines.push(`R2: ${fmt(fit.r2)}`);
+  const gErr = Number.isFinite(fit.g) ? ((fit.g - 9.81) / 9.81) * 100 : NaN;
   lines.push(`g_error: ${fmt(gErr)} %`);
+  lines.push(`t_span: ${fmt(fit.tSpan, 3)} s`);
 }
 
 function appendProjectileReadout(lines, last) {
   const rows = app.history.slice(-500);
   const xs = rows.map((r) => r.primary);
   const ys = rows.map((r) => r.y);
-  const ayMean = mean(rows.map((r) => r.ay));
+  const fit = projectileFit();
   lines.push(`x: ${last.primary.toFixed(4)} m`);
   lines.push(`y: ${last.y.toFixed(4)} m`);
   lines.push(`speed: ${last.speed.toFixed(4)} m/s`);
   lines.push(`range: ${fmt(max(xs) - min(xs))} m`);
   lines.push(`height: ${fmt(max(ys) - min(ys))} m`);
-  lines.push(`mean ay: ${fmt(ayMean)} m/s^2`);
+  lines.push(`v0_fit: ${fmt(fit.v0)} m/s`);
+  lines.push(`g_fit: ${fmt(fit.g)} m/s^2`);
+  lines.push(`R2_y: ${fmt(fit.r2y)}`);
 }
 
 function appendLinearReadout(lines, last) {
@@ -1333,6 +1377,128 @@ function max(values) {
 
 function fmt(value, digits = 4) {
   return Number.isFinite(value) ? value.toFixed(digits) : "-";
+}
+
+function freefallFit() {
+  const rows = app.history.filter((r) => Number.isFinite(r.time) && Number.isFinite(r.y));
+  const fit = fitQuadratic(rows, (r) => r.y);
+  return {
+    g: fit.a,
+    v0: fit.v0,
+    y0: fit.p0,
+    r2: fit.r2,
+    tSpan: fit.tSpan,
+  };
+}
+
+function projectileFit() {
+  const rows = app.history.filter((r) => Number.isFinite(r.time) && Number.isFinite(r.primary) && Number.isFinite(r.y));
+  const xFit = fitLinear(rows, (r) => r.primary);
+  const yFit = fitQuadratic(rows, (r) => r.y);
+  const v0 = Number.isFinite(xFit.v) && Number.isFinite(yFit.v0) ? Math.hypot(xFit.v, yFit.v0) : NaN;
+  return {
+    vx0: xFit.v,
+    vy0: yFit.v0,
+    v0,
+    g: Number.isFinite(yFit.a) ? -yFit.a : NaN,
+    r2x: xFit.r2,
+    r2y: yFit.r2,
+    tSpan: Math.max(xFit.tSpan || 0, yFit.tSpan || 0),
+  };
+}
+
+function fitQuadratic(rows, valueOf) {
+  if (rows.length < 6) return emptyFit();
+  const t0 = rows[0].time;
+  const sums = {
+    n: 0, t: 0, t2: 0, t3: 0, t4: 0, y: 0, ty: 0, t2y: 0,
+  };
+  const values = [];
+  for (const r of rows) {
+    const t = r.time - t0;
+    const y = valueOf(r);
+    if (!Number.isFinite(t) || !Number.isFinite(y)) continue;
+    const q = 0.5 * t * t;
+    sums.n += 1;
+    sums.t += t;
+    sums.t2 += t * t;
+    sums.t3 += t * t * t;
+    sums.t4 += t * t * t * t;
+    sums.y += y;
+    sums.ty += t * y;
+    sums.t2y += q * y;
+    values.push({ t, y });
+  }
+  if (sums.n < 6) return emptyFit();
+  const A = [
+    [sums.n, sums.t, 0.5 * sums.t2],
+    [sums.t, sums.t2, 0.5 * sums.t3],
+    [0.5 * sums.t2, 0.5 * sums.t3, 0.25 * sums.t4],
+  ];
+  const b = [sums.y, sums.ty, sums.t2y];
+  const beta = solve3(A, b);
+  if (!beta) return emptyFit();
+  const [p0, v0, a] = beta;
+  const yMean = sums.y / sums.n;
+  let ssRes = 0;
+  let ssTot = 0;
+  for (const p of values) {
+    const yHat = p0 + v0 * p.t + 0.5 * a * p.t * p.t;
+    ssRes += (p.y - yHat) ** 2;
+    ssTot += (p.y - yMean) ** 2;
+  }
+  return { p0, v0, a, r2: ssTot > 1e-12 ? 1 - ssRes / ssTot : NaN, tSpan: values[values.length - 1].t - values[0].t };
+}
+
+function fitLinear(rows, valueOf) {
+  if (rows.length < 3) return { p0: NaN, v: NaN, r2: NaN, tSpan: NaN };
+  const t0 = rows[0].time;
+  const values = [];
+  let n = 0, st = 0, sy = 0, stt = 0, sty = 0;
+  for (const r of rows) {
+    const t = r.time - t0;
+    const y = valueOf(r);
+    if (!Number.isFinite(t) || !Number.isFinite(y)) continue;
+    n += 1; st += t; sy += y; stt += t * t; sty += t * y;
+    values.push({ t, y });
+  }
+  const det = n * stt - st * st;
+  if (n < 3 || Math.abs(det) < 1e-12) return { p0: NaN, v: NaN, r2: NaN, tSpan: NaN };
+  const p0 = (sy * stt - st * sty) / det;
+  const v = (n * sty - st * sy) / det;
+  const yMean = sy / n;
+  let ssRes = 0;
+  let ssTot = 0;
+  for (const p of values) {
+    const yHat = p0 + v * p.t;
+    ssRes += (p.y - yHat) ** 2;
+    ssTot += (p.y - yMean) ** 2;
+  }
+  return { p0, v, r2: ssTot > 1e-12 ? 1 - ssRes / ssTot : NaN, tSpan: values[values.length - 1].t - values[0].t };
+}
+
+function solve3(A, b) {
+  const M = A.map((row, i) => row.concat([b[i]]));
+  for (let col = 0; col < 3; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < 3; r++) {
+      if (Math.abs(M[r][col]) > Math.abs(M[pivot][col])) pivot = r;
+    }
+    if (Math.abs(M[pivot][col]) < 1e-12) return null;
+    if (pivot !== col) [M[pivot], M[col]] = [M[col], M[pivot]];
+    const div = M[col][col];
+    for (let c = col; c < 4; c++) M[col][c] /= div;
+    for (let r = 0; r < 3; r++) {
+      if (r === col) continue;
+      const factor = M[r][col];
+      for (let c = col; c < 4; c++) M[r][c] -= factor * M[col][c];
+    }
+  }
+  return [M[0][3], M[1][3], M[2][3]];
+}
+
+function emptyFit() {
+  return { p0: NaN, v0: NaN, a: NaN, r2: NaN, tSpan: NaN };
 }
 
 function estimatePeriod(times, values) {
@@ -1596,6 +1762,13 @@ function resetExperiment() {
   app.lastPos = null;
   app.smoothPos = null;
   app.lostFrames = 0;
+  app.lastMediaTime = null;
+  if (app.videoFileMode && isBallisticsMode() && video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    video.currentTime = 0;
+    if (!app.selectionPausedVideo) {
+      video.play().catch(() => setStatus("VIDEO PAUSED", false));
+    }
+  }
   currentEstimator();
 }
 
@@ -1625,9 +1798,32 @@ function csvText() {
     "primary_measured_y",
     "velocity_y_numerical",
     "acceleration_y_numerical",
+    "fit_g",
+    "fit_v0",
+    "fit_vx0",
+    "fit_vy0",
+    "fit_r2",
+    "fit_t_span",
   ];
   const lines = [headers.join(",")];
+  const freeFit = isFreefallMode() ? freefallFit() : null;
+  const projFit = isProjectileMode() ? projectileFit() : null;
   for (const r of app.history) {
+    const fit = isFreefallMode() ? {
+      g: freeFit.g,
+      v0: freeFit.v0,
+      vx0: "",
+      vy0: freeFit.v0,
+      r2: freeFit.r2,
+      tSpan: freeFit.tSpan,
+    } : isProjectileMode() ? {
+      g: projFit.g,
+      v0: projFit.v0,
+      vx0: projFit.vx0,
+      vy0: projFit.vy0,
+      r2: projFit.r2y,
+      tSpan: projFit.tSpan,
+    } : {};
     lines.push([
       r.time,
       els.experiment.value,
@@ -1653,6 +1849,12 @@ function csvText() {
       r.measuredY ?? "",
       r.numVelocityY ?? "",
       r.numAccelerationY ?? "",
+      fit.g ?? "",
+      fit.v0 ?? "",
+      fit.vx0 ?? "",
+      fit.vy0 ?? "",
+      fit.r2 ?? "",
+      fit.tSpan ?? "",
     ].map((v) => typeof v === "number" ? v.toFixed(8) : v).join(","));
   }
   return lines.join("\n");
@@ -1738,6 +1940,43 @@ async function discoverNeural() {
 }
 
 async function fitExperimentModel() {
+  if (isFreefallMode()) {
+    const fit = freefallFit();
+    if (!Number.isFinite(fit.g)) {
+      els.equationOutput.textContent = "Not enough free-fall samples. Calibrate, sample the marker, then record one clean drop.";
+      return;
+    }
+    const err = ((fit.g - 9.81) / 9.81) * 100;
+    els.equationOutput.textContent = [
+      "Free fall fit: y_down = y0 + v0*t + 0.5*g*t^2",
+      "",
+      `g_fit  : ${fit.g.toFixed(4)} m/s^2`,
+      `v0_fit : ${fit.v0.toFixed(4)} m/s`,
+      `g_error: ${err.toFixed(2)} %`,
+      `R2     : ${fit.r2.toFixed(4)}`,
+      `t_span : ${fit.tSpan.toFixed(3)} s`,
+    ].join("\n");
+    return;
+  }
+  if (isProjectileMode()) {
+    const fit = projectileFit();
+    if (!Number.isFinite(fit.g)) {
+      els.equationOutput.textContent = "Not enough projectile samples. Calibrate, sample the marker, then record one clean throw.";
+      return;
+    }
+    els.equationOutput.textContent = [
+      "Projectile fit: x = x0 + vx0*t, y = y0 + vy0*t - 0.5*g*t^2",
+      "",
+      `vx0    : ${fit.vx0.toFixed(4)} m/s`,
+      `vy0    : ${fit.vy0.toFixed(4)} m/s`,
+      `v0     : ${fit.v0.toFixed(4)} m/s`,
+      `g_fit  : ${fit.g.toFixed(4)} m/s^2`,
+      `R2_x   : ${fit.r2x.toFixed(4)}`,
+      `R2_y   : ${fit.r2y.toFixed(4)}`,
+      `t_span : ${fit.tSpan.toFixed(3)} s`,
+    ].join("\n");
+    return;
+  }
   if (!isPendulumMode()) {
     els.equationOutput.textContent = `${profile().name}: ${experimentNote()}\nCSV export includes the measured time series.`;
     return;
