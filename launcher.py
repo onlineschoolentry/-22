@@ -1,199 +1,73 @@
+"""Local launcher for the web-based measurement console.
+
+The project now uses the browser UI as the local program UI. Running this file
+starts the local backend and opens the existing web console in the default
+browser.
 """
-PhysicsLens launcher.
 
-Simple GUI for choosing the experiment and camera source before starting the
-OpenCV dashboard.
-"""
+from __future__ import annotations
 
-from argparse import Namespace
-import tkinter as tk
-from tkinter import ttk
+import argparse
+import socket
+import threading
+import time
+import webbrowser
+
+from web_server import serve
 
 
-class PhysicsLensLauncher:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("PhysicsLens")
-        self.root.geometry("600x450")
-        self.root.resizable(False, False)
-
-        self.experiment = tk.StringVar(value="pendulum")
-        self.source = tk.StringVar(value="Local webcam / Iriun (recommended)")
-        self.color = tk.StringVar(value="orange")
-        self.camera = tk.StringVar(value="0")
-        self.video = tk.StringVar(value="")
-        self.stream_url = tk.StringVar(value="")
-        self.length = tk.StringVar(value="0.70")
-        self.mass = tk.StringVar(value="0.05")
-        self.pixels_per_meter = tk.StringVar(value="300")
-        self.scale_distance = tk.StringVar(value="1.0")
-        self.phone_port = tk.StringVar(value="8765")
-        self.show_advanced = tk.BooleanVar(value=False)
-
-        self._build()
-
-    def _build(self):
-        self.root.configure(bg="#f4f6f8")
-        style = ttk.Style()
-        style.configure("Title.TLabel", font=("Segoe UI", 20, "bold"))
-        style.configure("Hint.TLabel", foreground="#56616f")
-        style.configure("Primary.TButton", font=("Segoe UI", 12, "bold"))
-
-        outer = ttk.Frame(self.root, padding=18)
-        outer.pack(fill="both", expand=True)
-
-        ttk.Label(outer, text="PhysicsLens", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
-            outer,
-            text="여러 물리 실험에서 측정할 물리량과 카메라 입력을 선택하세요.",
-            style="Hint.TLabel",
-        ).pack(anchor="w", pady=(2, 14))
-
-        quick = ttk.LabelFrame(outer, text="Quick setup", padding=12)
-        quick.pack(fill="x")
-
-        self._row_combo(
-            quick,
-            0,
-            "Experiment",
-            self.experiment,
-            [
-                "pendulum",
-                "freefall",
-                "projectile",
-                "linear_motion",
-                "spring_mass",
-                "circular_motion",
-                "motion2d",
-            ],
-        )
-        self._row_combo(
-            quick,
-            1,
-            "Camera",
-            self.source,
-            [
-                "Local webcam / Iriun (recommended)",
-                "IP camera stream URL",
-                "Phone QR browser",
-                "Video file",
-            ],
-        )
-        self._row_combo(quick, 2, "Marker color", self.color, ["orange", "green", "red", "blue", "yellow"])
-
-        ttk.Label(
-            outer,
-            text=(
-                "진자는 회전축-추 보정이 필요하고, 나머지 실험은 원점과 기준 거리 보정 후 "
-                "위치/속도/가속도/힘을 공통 파이프라인으로 측정합니다."
-            ),
-            style="Hint.TLabel",
-            wraplength=500,
-        ).pack(anchor="w", pady=(10, 4))
-
-        ttk.Checkbutton(
-            outer,
-            text="Show advanced settings",
-            variable=self.show_advanced,
-            command=self._toggle_advanced,
-        ).pack(anchor="w", pady=(6, 0))
-
-        self.advanced = ttk.LabelFrame(outer, text="Advanced", padding=10)
-        self._entry(self.advanced, 0, "Local camera index", self.camera)
-        self._entry(self.advanced, 1, "Video path", self.video)
-        self._entry(self.advanced, 2, "Stream URL", self.stream_url)
-        self._entry(self.advanced, 3, "Phone port", self.phone_port)
-        self._entry(self.advanced, 4, "Pendulum length (m)", self.length)
-        self._entry(self.advanced, 5, "Object mass (kg)", self.mass)
-        self._entry(self.advanced, 6, "Pixels per meter", self.pixels_per_meter)
-        self._entry(self.advanced, 7, "Scale distance (m)", self.scale_distance)
-
-        ttk.Button(
-            outer,
-            text="Start",
-            command=self.start,
-            style="Primary.TButton",
-        ).pack(fill="x", pady=(16, 0), ipady=8)
-
-    def _row_combo(self, parent, row, label, variable, values):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=8)
-        ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=28).grid(
-            row=row,
-            column=1,
-            sticky="ew",
-            pady=8,
-        )
-        parent.columnconfigure(1, weight=1)
-
-    def _entry(self, parent, row, label, variable):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
-        ttk.Entry(parent, textvariable=variable, width=36).grid(row=row, column=1, sticky="ew", pady=4)
-        parent.columnconfigure(1, weight=1)
-
-    def _toggle_advanced(self):
-        if self.show_advanced.get():
-            self.advanced.pack(fill="x", pady=(8, 0))
-            self.root.geometry("600x660")
-        else:
-            self.advanced.pack_forget()
-            self.root.geometry("600x450")
-
-    def _float(self, value, fallback):
+def find_free_port(preferred: int) -> int:
+    """Return preferred port if available, otherwise ask the OS for one."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         try:
-            return float(value)
-        except ValueError:
-            return fallback
+            sock.bind(("127.0.0.1", preferred))
+            return preferred
+        except OSError:
+            pass
 
-    def _int(self, value, fallback):
-        try:
-            return int(value)
-        except ValueError:
-            return fallback
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
-    def _args(self):
-        source = self._source_code()
-        return Namespace(
-            experiment=self.experiment.get(),
-            camera=self._int(self.camera.get(), 0),
-            video=self.video.get().strip() if source == "video" else None,
-            phone_camera=source == "phone",
-            phone_host="0.0.0.0",
-            phone_port=self._int(self.phone_port.get(), 8765),
-            phone_https=True,
-            show_qr=True,
-            stream_url=self.stream_url.get().strip() if source == "stream" else None,
-            color=self.color.get(),
-            length=self._float(self.length.get(), 0.70),
-            gravity=9.81,
-            gamma=0.05,
-            augmented=True,
-            pixels_per_meter=self._float(self.pixels_per_meter.get(), 300.0),
-            scale_distance=self._float(self.scale_distance.get(), 1.0),
-            mass=self._float(self.mass.get(), 0.05),
-        )
 
-    def _source_code(self):
-        selected = self.source.get()
-        if selected.startswith("Local webcam"):
-            return "local"
-        if selected.startswith("IP camera"):
-            return "stream"
-        if selected.startswith("Phone QR"):
-            return "phone"
-        if selected.startswith("Video"):
-            return "video"
-        return selected
+def open_browser_later(url: str, delay: float = 0.7) -> None:
+    def _open() -> None:
+        time.sleep(delay)
+        webbrowser.open(url)
 
-    def start(self):
-        from main import PhysicsLensApp
+    threading.Thread(target=_open, daemon=True).start()
 
-        args = self._args()
-        self.root.destroy()
-        PhysicsLensApp(args).run()
 
-    def run(self):
-        self.root.mainloop()
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="로컬 웹 UI 실행기")
+    parser.add_argument("--host", default="127.0.0.1", help="로컬 실행 기본값은 127.0.0.1")
+    parser.add_argument("--port", type=int, default=8843, help="선호 포트")
+    parser.add_argument(
+        "--https",
+        action="store_true",
+        help="휴대폰 브라우저 카메라를 직접 쓸 때만 사용합니다. PC/Iriun은 HTTP 권장.",
+    )
+    parser.add_argument("--no-open", action="store_true", help="브라우저를 자동으로 열지 않음")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    port = find_free_port(args.port)
+    scheme = "https" if args.https else "http"
+    url = f"{scheme}://127.0.0.1:{port}/"
+
+    if not args.no_open:
+        open_browser_later(url)
+
+    print("=" * 72)
+    print("Kinematic Measurement Console - Local Program")
+    print("=" * 72)
+    print(f"UI    : {url}")
+    print("Stop  : Ctrl+C")
+    print("=" * 72)
+    serve(args.host, port, use_https=args.https)
 
 
 if __name__ == "__main__":
-    PhysicsLensLauncher().run()
+    main()
