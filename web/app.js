@@ -1,4 +1,4 @@
-const video = document.getElementById("video");
+﻿const video = document.getElementById("video");
 const canvas = document.getElementById("videoCanvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
@@ -7,7 +7,6 @@ const els = {
   statusText: document.getElementById("statusText"),
   cameraPanel: document.querySelector(".cameraPanel"),
   startCamera: document.getElementById("startCamera"),
-  phoneCamera: document.getElementById("phoneCamera"),
   uploadVideo: document.getElementById("uploadVideo"),
   videoFile: document.getElementById("videoFile"),
   slowmo: document.getElementById("slowmo"),
@@ -58,7 +57,7 @@ const experimentProfiles = {
     velocity: ["omega", "rad/s"],
     acceleration: ["alpha", "rad/s^2"],
     readout: "pendulum",
-    equation: "STLSQ로 theta_ddot = f(theta, omega)를 추정합니다.",
+    equation: "STLSQ濡?theta_ddot = f(theta, omega)瑜?異붿젙?⑸땲??",
   },
   freefall: {
     estimator: "motion2d",
@@ -69,7 +68,7 @@ const experimentProfiles = {
     velocity: ["vy", "m/s"],
     acceleration: ["ay", "m/s^2"],
     readout: "vertical",
-    equation: "가속도 ay의 평균값으로 중력가속도 g를 검토합니다.",
+    equation: "媛?띾룄 ay???됯퇏媛믪쑝濡?以묐젰媛?띾룄 g瑜?寃?좏빀?덈떎.",
   },
   projectile: {
     estimator: "motion2d",
@@ -80,7 +79,7 @@ const experimentProfiles = {
     velocity: ["speed", "m/s"],
     acceleration: ["|a|", "m/s^2"],
     readout: "motion2d",
-    equation: "x-y 궤적, 속도, 가속도 변화를 실시간 측정합니다.",
+    equation: "x-y 沅ㅼ쟻, ?띾룄, 媛?띾룄 蹂?붾? ?ㅼ떆媛?痢≪젙?⑸땲??",
   },
   linear_motion: {
     estimator: "motion2d",
@@ -91,7 +90,7 @@ const experimentProfiles = {
     velocity: ["vx", "m/s"],
     acceleration: ["ax", "m/s^2"],
     readout: "motion2d",
-    equation: "질량 입력값으로 F = ma를 함께 계산합니다.",
+    equation: "吏덈웾 ?낅젰媛믪쑝濡?F = ma瑜??④퍡 怨꾩궛?⑸땲??",
   },
   spring_mass: {
     estimator: "motion2d",
@@ -102,7 +101,7 @@ const experimentProfiles = {
     velocity: ["vx", "m/s"],
     acceleration: ["ax", "m/s^2"],
     readout: "motion2d",
-    equation: "평형점 기준 변위, 속도, 가속도 시계열을 측정합니다.",
+    equation: "?됲삎??湲곗? 蹂?? ?띾룄, 媛?띾룄 ?쒓퀎?댁쓣 痢≪젙?⑸땲??",
   },
   circular_motion: {
     estimator: "motion2d",
@@ -113,7 +112,7 @@ const experimentProfiles = {
     velocity: ["speed", "m/s"],
     acceleration: ["|a|", "m/s^2"],
     readout: "motion2d",
-    equation: "속력과 가속도 크기로 구심가속도 추세를 확인합니다.",
+    equation: "?띾젰怨?媛?띾룄 ?ш린濡?援ъ떖媛?띾룄 異붿꽭瑜??뺤씤?⑸땲??",
   },
   motion2d: {
     estimator: "motion2d",
@@ -124,7 +123,7 @@ const experimentProfiles = {
     velocity: ["vx", "m/s"],
     acceleration: ["ax", "m/s^2"],
     readout: "motion2d",
-    equation: "범용 2D 위치, 속도, 가속도, 힘 측정 모드입니다.",
+    equation: "踰붿슜 2D ?꾩튂, ?띾룄, 媛?띾룄, ??痢≪젙 紐⑤뱶?낅땲??",
   },
 };
 
@@ -203,11 +202,6 @@ const cleanExperimentProfiles = {
 
 const app = {
   stream: null,
-  phoneMode: false,
-  phoneImage: new Image(),
-  phoneImageReady: false,
-  phonePolling: false,
-  phoneLastFrame: 0,
   videoFileMode: false,
   videoObjectUrl: null,
   videoLoopHandle: null,
@@ -517,7 +511,6 @@ function currentEstimator() {
 async function startCamera() {
   stopVideoFileMode();
   if (app.stream) app.stream.getTracks().forEach((track) => track.stop());
-  app.phoneMode = false;
   app.videoFileMode = false;
   app.stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -530,46 +523,6 @@ async function startCamera() {
   requestAnimationFrame(loop);
 }
 
-function startPhoneCamera() {
-  stopVideoFileMode();
-  if (app.stream) {
-    app.stream.getTracks().forEach((track) => track.stop());
-    app.stream = null;
-  }
-  app.phoneMode = true;
-  app.videoFileMode = false;
-  app.running = true;
-  app.phoneImageReady = false;
-  setStatus("WAIT PHONE", false);
-  startPhonePolling();
-  requestAnimationFrame(loop);
-}
-
-function startPhonePolling() {
-  if (app.phonePolling) return;
-  app.phonePolling = true;
-  const poll = () => {
-    if (!app.phoneMode) {
-      app.phonePolling = false;
-      return;
-    }
-    const img = new Image();
-    img.onload = () => {
-      app.phoneImage = img;
-      app.phoneImageReady = true;
-      app.phoneLastFrame = performance.now();
-      setStatus("PHONE RUN", true);
-      setTimeout(poll, 55);
-    };
-    img.onerror = () => {
-      setStatus("WAIT PHONE", false);
-      setTimeout(poll, 250);
-    };
-    img.src = `/api/frame.jpg?t=${Date.now()}`;
-  };
-  poll();
-}
-
 async function startVideoFile(file) {
   stopVideoFileMode({ keepVideoElement: true, keepLoadToken: true });
   const loadToken = ++app.videoLoadToken;
@@ -577,7 +530,6 @@ async function startVideoFile(file) {
     app.stream.getTracks().forEach((track) => track.stop());
     app.stream = null;
   }
-  app.phoneMode = false;
   app.videoFileMode = true;
   app.running = true;
   app.lastMediaTime = null;
@@ -763,19 +715,7 @@ function loop(ts) {
     app.fpsTimer = ts;
   }
 
-  if (app.phoneMode) {
-    if (app.phoneImageReady) {
-      ctx.drawImage(app.phoneImage, 0, 0, canvas.width, canvas.height);
-    } else {
-      ctx.fillStyle = "#020304";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#e7edf3";
-      ctx.font = "18px Consolas";
-      ctx.fillText("Open /phone on the phone, then tap Start Camera.", 24, 42);
-    }
-  } else {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  }
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   const result = trackMarker();
   app.lastMeasurement = result;
   drawOverlay(result);
@@ -926,12 +866,12 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
       const width = (maxX - minX + 1) * step;
       const height = (maxY - minY + 1) * step;
       const aspect = Math.max(width, height) / Math.max(Math.min(width, height), step);
-      if (aspect > 4.5) continue;
-      if (width > frameW * 0.45 || height > frameH * 0.45) continue;
+      if (aspect > 8) continue;
+      if (width > frameW * 0.7 || height > frameH * 0.7) continue;
 
       const boxCells = (maxX - minX + 1) * (maxY - minY + 1);
       const density = count / Math.max(boxCells, 1);
-      if (density < 0.12) continue;
+      if (density < 0.05) continue;
 
       const avgQ = qsum / Math.max(count, 1) / 1000;
       const aspectScore = 1 / aspect;
@@ -944,7 +884,7 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
       }
       if (app.targetSeed) {
         const d = Math.hypot(bx - app.targetSeed.x, by - app.targetSeed.y);
-        if (app.targetSeedFrames > 0 && d > 240) continue;
+        if (app.targetSeedFrames > 0 && d > 400) continue;
         score += app.targetSeedFrames > 0
           ? Math.max(0, 320 - d * 1.05)
           : Math.max(0, 120 - d * 0.45);
@@ -1061,9 +1001,9 @@ function pickColorAt(px, py) {
   // a lot as the bob moves between lit and shadowed parts of its arc, so allow a
   // wide V (and looser S) floor. The tight hue + connected-component + spatial
   // lock keep background out despite the permissive brightness range.
-  const hTol = 13;
-  const sLo = Math.max(60, sMed - 85);
-  const vLo = Math.max(40, vMed - 130);
+  const hTol = 16;
+  const sLo = Math.max(40, sMed - 110);
+  const vLo = Math.max(25, vMed - 150);
   const loH = hMed - hTol;
   const hiH = hMed + hTol;
 
@@ -1095,10 +1035,6 @@ function pickColorAt(px, py) {
 
 function drawCurrentSourceFrame() {
   resizeCanvas();
-  if (app.phoneMode && app.phoneImageReady) {
-    ctx.drawImage(app.phoneImage, 0, 0, canvas.width, canvas.height);
-    return;
-  }
   if ((app.videoFileMode || app.stream) && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   }
@@ -1227,24 +1163,24 @@ function drawCross(x, y, r) {
 }
 
 function calibrationMessage() {
-  if (app.calibration === "pendulumLeftAnchor") return "[보정] 왼쪽 상단 고정점을 클릭";
-  if (app.calibration === "pendulumRightAnchor") return "[보정] 오른쪽 상단 고정점을 클릭";
-  if (app.calibration === "pendulumBob") return "[보정] 정지 상태 추 중심을 클릭";
-  if (app.calibration === "motionOrigin") return "[보정] 원점/평형점을 클릭";
-  if (app.calibration === "motionScale") return "[보정] 기준 거리 끝점을 클릭";
+  if (app.calibration === "pendulumLeftAnchor") return "[蹂댁젙] ?쇱そ ?곷떒 怨좎젙?먯쓣 ?대┃";
+  if (app.calibration === "pendulumRightAnchor") return "[蹂댁젙] ?ㅻⅨ履??곷떒 怨좎젙?먯쓣 ?대┃";
+  if (app.calibration === "pendulumBob") return "[蹂댁젙] ?뺤? ?곹깭 異?以묒떖???대┃";
+  if (app.calibration === "motionOrigin") return "[蹂댁젙] ?먯젏/?됲삎?먯쓣 ?대┃";
+  if (app.calibration === "motionScale") return "[蹂댁젙] 湲곗? 嫄곕━ ?앹젏???대┃";
   return "";
 }
 
 function experimentCalibrationMessage() {
-  if (app.calibration === "pendulumLeftAnchor") return "[보정] 왼쪽 고정점을 클릭";
-  if (app.calibration === "pendulumRightAnchor") return "[보정] 오른쪽 고정점을 클릭";
-  if (app.calibration === "pendulumBob") return "[보정] 정지한 추의 중심을 클릭";
-  if (app.calibration === "motionOrigin" && isFreefallMode()) return "[보정] 낙하 시작점/공 중심을 클릭";
-  if (app.calibration === "motionScale" && isFreefallMode()) return "[보정] 아래쪽 거리 기준점을 클릭";
-  if (app.calibration === "motionOrigin" && isProjectileMode()) return "[보정] 발사 시작점/공 중심을 클릭";
-  if (app.calibration === "motionScale" && isProjectileMode()) return "[보정] 거리 기준 끝점을 클릭";
-  if (app.calibration === "motionOrigin") return "[보정] 원점/평형점을 클릭";
-  if (app.calibration === "motionScale") return "[보정] 기준 거리 끝점을 클릭";
+  if (app.calibration === "pendulumLeftAnchor") return "[蹂댁젙] ?쇱そ 怨좎젙?먯쓣 ?대┃";
+  if (app.calibration === "pendulumRightAnchor") return "[蹂댁젙] ?ㅻⅨ履?怨좎젙?먯쓣 ?대┃";
+  if (app.calibration === "pendulumBob") return "[蹂댁젙] ?뺤???異붿쓽 以묒떖???대┃";
+  if (app.calibration === "motionOrigin" && isFreefallMode()) return "[蹂댁젙] ?숉븯 ?쒖옉??怨?以묒떖???대┃";
+  if (app.calibration === "motionScale" && isFreefallMode()) return "[蹂댁젙] ?꾨옒履?嫄곕━ 湲곗??먯쓣 ?대┃";
+  if (app.calibration === "motionOrigin" && isProjectileMode()) return "[蹂댁젙] 諛쒖궗 ?쒖옉??怨?以묒떖???대┃";
+  if (app.calibration === "motionScale" && isProjectileMode()) return "[蹂댁젙] 嫄곕━ 湲곗? ?앹젏???대┃";
+  if (app.calibration === "motionOrigin") return "[蹂댁젙] ?먯젏/?됲삎?먯쓣 ?대┃";
+  if (app.calibration === "motionScale") return "[蹂댁젙] 湲곗? 嫄곕━ ?앹젏???대┃";
   return "";
 }
 
@@ -1927,10 +1863,10 @@ async function discoverEquation() {
     return;
   }
   if (app.history.length < 80) {
-    els.equationOutput.textContent = "샘플이 부족합니다. 최소 8~12초 정도 기록한 뒤 다시 실행하세요.";
+    els.equationOutput.textContent = "?섑뵆??遺議깊빀?덈떎. 理쒖냼 8~12珥??뺣룄 湲곕줉?????ㅼ떆 ?ㅽ뻾?섏꽭??";
     return;
   }
-  els.equationOutput.textContent = "분석 중...";
+  els.equationOutput.textContent = "遺꾩꽍 以?..";
   try {
     const res = await fetch("/api/discover", {
       method: "POST",
@@ -1951,7 +1887,7 @@ async function discoverEquation() {
       `q_jerk    : ${data.q_jerk.toExponential(3)}`,
     ].join("\n");
   } catch (err) {
-    els.equationOutput.textContent = `분석 실패: ${err.message}\nweb_server.py로 실행 중인지 확인하세요.`;
+    els.equationOutput.textContent = `遺꾩꽍 ?ㅽ뙣: ${err.message}\nweb_server.py濡??ㅽ뻾 以묒씤吏 ?뺤씤?섏꽭??`;
   }
 }
 
@@ -1960,15 +1896,14 @@ async function discoverNeural() {
     ? "pendulum"
     : (els.experiment.value === "spring_mass" ? "spring" : null);
   if (!mode) {
-    els.equationOutput.textContent =
-      `${profile().name}: Neural ODE 발견은 진자/용수철(진동) 모드 전용입니다.`;
+    els.equationOutput.textContent = `${profile().name}: Neural ODE discovery is available for pendulum and spring-mass modes.`;
     return;
   }
   if (app.history.length < 100) {
-    els.equationOutput.textContent = "샘플 부족. 큰 진폭으로 10초+ 기록 후 다시 실행하세요.";
+    els.equationOutput.textContent = "Not enough samples. Record 10+ seconds, then try Neural ODE again.";
     return;
   }
-  els.equationOutput.textContent = "Neural ODE 학습 중... (1~2분 소요, 그대로 기다려주세요)";
+  els.equationOutput.textContent = "Training Neural ODE... this can take 1-2 minutes.";
   try {
     const res = await fetch("/api/discover_neural", {
       method: "POST",
@@ -1979,10 +1914,10 @@ async function discoverNeural() {
     if (!res.ok) throw new Error(data.error || "analysis failed");
     const isSpring = data.mode === "spring";
     els.equationOutput.textContent = [
-      "[Neural ODE + 유전프로그래밍 기호회귀]",
+      "[Neural ODE + GP symbolic regression]",
       data.equation,
       "",
-      `${data.const_name} 교차검증 (3가지 독립 방법):`,
+      `${data.const_name} cross-check:`,
       `  Neural ODE + GP-SR : ${data.const_neural_ode.toFixed(2)}`,
       `  STLSQ (SINDy)      : ${data.const_stlsq.toFixed(2)}`,
       `  Period (2pi/T)^2   : ${data.const_period.toFixed(2)}`,
@@ -1991,7 +1926,7 @@ async function discoverNeural() {
     ].join("\n");
   } catch (err) {
     els.equationOutput.textContent =
-      `Neural ODE 실패: ${err.message}\n로컬에서 'python web_server.py --http' 실행(torch 필요).`;
+      `Neural ODE failed: ${err.message}\nInstall ML deps with requirements-ml.txt and run locally.`;
   }
 }
 
@@ -2145,7 +2080,6 @@ function handleSelectedVideoFile(file) {
 }
 
 els.startCamera.addEventListener("click", () => startCamera().catch((err) => setStatus(err.message, false)));
-els.phoneCamera.addEventListener("click", startPhoneCamera);
 els.uploadVideo.addEventListener("click", () => setStatus("SELECT FILE", false));
 els.uploadVideo.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter" || ev.key === " ") {
@@ -2173,7 +2107,7 @@ els.calibrate.addEventListener("click", startCalibration);
 els.reset.addEventListener("click", resetExperiment);
 els.saveCsv.addEventListener("click", saveCsv);
 els.discover.addEventListener("click", fitExperimentModel);
-if (els.discoverNeural) els.discoverNeural.addEventListener("click", discoverNeural);
+els.discoverNeural.addEventListener("click", discoverNeural);
 canvas.addEventListener("click", handleCanvasClick);
 els.experiment.addEventListener("change", () => {
   resetExperimentSession();

@@ -113,7 +113,7 @@ input,
 
 .cameraActions {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 6px;
   padding: 8px;
   border-top: 1px solid var(--line);

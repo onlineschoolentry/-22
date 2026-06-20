@@ -42,11 +42,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="로컬 웹 UI 실행기")
     parser.add_argument("--host", default="127.0.0.1", help="로컬 실행 기본값은 127.0.0.1")
     parser.add_argument("--port", type=int, default=8843, help="선호 포트")
-    parser.add_argument(
-        "--https",
-        action="store_true",
-        help="휴대폰 브라우저 카메라를 직접 쓸 때만 사용합니다. PC/Iriun은 HTTP 권장.",
-    )
     parser.add_argument("--no-open", action="store_true", help="브라우저를 자동으로 열지 않음")
     return parser.parse_args()
 
@@ -54,8 +49,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     port = find_free_port(args.port)
-    scheme = "https" if args.https else "http"
-    url = f"{scheme}://127.0.0.1:{port}/"
+    url = f"http://127.0.0.1:{port}/"
 
     if not args.no_open:
         open_browser_later(url)
@@ -66,7 +60,7 @@ def main() -> None:
     print(f"UI    : {url}")
     print("Stop  : Ctrl+C")
     print("=" * 72)
-    serve(args.host, port, use_https=args.https)
+    serve(args.host, port)
 
 
 if __name__ == "__main__":
