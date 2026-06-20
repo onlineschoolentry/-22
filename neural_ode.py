@@ -100,6 +100,25 @@ def sample_vector_field(func, theta, omega, n_grid=900, seed=0):
     return th, om, acc
 
 
+def predict_trajectory(func, t, theta0, omega0, max_points=240):
+    """Integrate the learned vector field from one initial state for UI validation."""
+    t = np.asarray(t, dtype=np.float64)
+    if len(t) > max_points:
+        idx = np.linspace(0, len(t) - 1, max_points).astype(int)
+        t_eval = t[idx]
+    else:
+        t_eval = t
+    tt = torch.tensor(t_eval - t_eval[0], dtype=torch.float32)
+    x0 = torch.tensor([[float(theta0), float(omega0)]], dtype=torch.float32)
+    with torch.no_grad():
+        pred = odeint(func, x0, tt, method="rk4").squeeze(1).cpu().numpy()
+    return {
+        "t": t_eval.tolist(),
+        "pos": pred[:, 0].tolist(),
+        "vel": pred[:, 1].tolist(),
+    }
+
+
 # ----------------------------------------------------------------------
 
 def _simulate(g=9.81, L=0.7, gamma=0.25, theta0=0.6, fps=60, duration=10, substeps=12):

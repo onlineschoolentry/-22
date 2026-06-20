@@ -225,6 +225,7 @@ const app = {
   history: [],
   estimator: null,
   lastMeasurement: null,
+  neuralResult: null,
   // Marker color picked by click (overrides the preset dropdown when set).
   markerHsv: null,
   targetSeed: null,
@@ -793,8 +794,9 @@ function trackMarker() {
     return { detected: false, area: blob ? blob.count * step * step : 0 };
   }
 
-  let cx = blob.x;
-  let cy = blob.y;
+  const refined = refineSubpixelCentroid(data, W, Hh, blob, step);
+  let cx = refined?.x ?? blob.x;
+  let cy = refined?.y ?? blob.y;
   if (app.smoothPos) {
     const jump = Math.hypot(cx - app.smoothPos.x, cy - app.smoothPos.y);
     const alpha = locked && jump <= app.maxJump ? 0.68 : 1.0;
@@ -804,7 +806,14 @@ function trackMarker() {
   app.smoothPos = { x: cx, y: cy };
   app.lastPos = { x: cx, y: cy };
   app.lostFrames = 0;
-  return { detected: true, x: cx, y: cy, area: blob.count * step * step, confidence: blob.confidence };
+  return {
+    detected: true,
+    x: cx,
+    y: cy,
+    area: blob.count * step * step,
+    confidence: refined?.confidence ?? blob.confidence,
+    subpixel: Boolean(refined),
+  };
 }
 
 function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frameH) {
@@ -890,10 +899,54 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
           : Math.max(0, 120 - d * 0.45);
       }
 
-      if (!best || score > best.score) best = { x: bx, y: by, count, score, confidence: avgQ };
+      if (!best || score > best.score) {
+        best = {
+          x: bx,
+          y: by,
+          count,
+          score,
+          confidence: avgQ,
+          minX: x0 + minX * step,
+          maxX: x0 + maxX * step,
+          minY: y0 + minY * step,
+          maxY: y0 + maxY * step,
+        };
+      }
     }
   }
   return best;
+}
+
+function refineSubpixelCentroid(data, W, Hh, blob, step) {
+  const margin = Math.max(4, step * 2);
+  const x0 = Math.max(0, Math.floor(blob.minX - margin));
+  const x1 = Math.min(W - 1, Math.ceil(blob.maxX + margin));
+  const y0 = Math.max(0, Math.floor(blob.minY - margin));
+  const y1 = Math.min(Hh - 1, Math.ceil(blob.maxY + margin));
+  let sw = 0;
+  let sx = 0;
+  let sy = 0;
+  let count = 0;
+
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * W + x) * 4;
+      const q = colorQuality(rgbToHsv(data[i], data[i + 1], data[i + 2]));
+      if (q <= 0) continue;
+      const w = q * q;
+      sx += x * w;
+      sy += y * w;
+      sw += w;
+      count += 1;
+    }
+  }
+  if (count < 12 || sw <= 0) return null;
+  return {
+    x: sx / sw,
+    y: sy / sw,
+    confidence: Math.sqrt(sw / count) / 1000,
+    count,
+  };
 }
 
 function inBand(hsv, lo, hi) {
@@ -1545,27 +1598,82 @@ function drawPhasePlot(plotCanvas) {
   c.fillStyle = "#e7edf3";
   c.font = "14px Segoe UI";
   const p = profile();
-  c.fillText(`${p.primary[0]}-${p.velocity[0]} phase`, 10, 22);
+  const neural = app.neuralResult;
+  const phaseTitle = neural?.mode === "projectile" ? "y-vy phase" : `${p.primary[0]}-${p.velocity[0]} phase`;
+  c.fillText(phaseTitle, 10, 22);
   const rows = app.history.slice(-500);
   if (rows.length < 2) return;
   const start = Math.max(app.history.length - rows.length, 0);
-  const xs = plotSeries("primary").slice(start);
-  const ys = plotSeries("velocity").slice(start);
+  const xs = neural?.mode === "projectile"
+    ? rows.map((r) => r.y)
+    : plotSeries("primary").slice(start);
+  const ys = neural?.mode === "projectile"
+    ? rows.map((r) => r.vy)
+    : plotSeries("velocity").slice(start);
   let minX = Math.min(...xs), maxX = Math.max(...xs);
   let minY = Math.min(...ys), maxY = Math.max(...ys);
+  if (neural?.prediction?.pos?.length) {
+    minX = Math.min(minX, ...neural.prediction.pos);
+    maxX = Math.max(maxX, ...neural.prediction.pos);
+    minY = Math.min(minY, ...neural.prediction.vel);
+    maxY = Math.max(maxY, ...neural.prediction.vel);
+  }
+  if (neural?.vector_field?.length) {
+    minX = Math.min(minX, ...neural.vector_field.map((v) => v.pos));
+    maxX = Math.max(maxX, ...neural.vector_field.map((v) => v.pos));
+    minY = Math.min(minY, ...neural.vector_field.map((v) => v.vel));
+    maxY = Math.max(maxY, ...neural.vector_field.map((v) => v.vel));
+  }
   const mx = Math.max((maxX - minX) * 0.15, 0.01);
   const my = Math.max((maxY - minY) * 0.15, 0.01);
   minX -= mx; maxX += mx; minY -= my; maxY += my;
+  const px = (x) => 36 + ((x - minX) / Math.max(maxX - minX, 1e-9)) * (w - 54);
+  const py = (y) => 34 + (1 - (y - minY) / Math.max(maxY - minY, 1e-9)) * (h - 52);
+
+  if (neural?.vector_field?.length) {
+    drawVectorField(c, neural.vector_field, px, py);
+  }
+  if (neural?.prediction?.pos?.length) {
+    c.strokeStyle = "#2cc7ff";
+    c.lineWidth = 2;
+    c.beginPath();
+    neural.prediction.pos.forEach((xv, i) => {
+      const x = px(xv);
+      const y = py(neural.prediction.vel[i]);
+      if (i === 0) c.moveTo(x, y);
+      else c.lineTo(x, y);
+    });
+    c.stroke();
+  }
+
   c.strokeStyle = "#ffdf4d";
   c.lineWidth = 2;
   c.beginPath();
   rows.forEach((_, i) => {
-    const x = 36 + ((xs[i] - minX) / Math.max(maxX - minX, 1e-9)) * (w - 54);
-    const y = 34 + (1 - (ys[i] - minY) / Math.max(maxY - minY, 1e-9)) * (h - 52);
+    const x = px(xs[i]);
+    const y = py(ys[i]);
     if (i === 0) c.moveTo(x, y);
     else c.lineTo(x, y);
   });
   c.stroke();
+}
+
+function drawVectorField(c, vectors, px, py) {
+  const mags = vectors.map((v) => Math.hypot(v.dpos, v.dvel)).filter(Number.isFinite);
+  const scale = Math.max(...mags, 1e-9);
+  c.strokeStyle = "rgba(216, 225, 234, 0.42)";
+  c.lineWidth = 1;
+  for (const v of vectors) {
+    const x = px(v.pos);
+    const y = py(v.vel);
+    const len = 10;
+    const dx = (v.dpos / scale) * len;
+    const dy = -(v.dvel / scale) * len;
+    c.beginPath();
+    c.moveTo(x - dx * 0.5, y - dy * 0.5);
+    c.lineTo(x + dx * 0.5, y + dy * 0.5);
+    c.stroke();
+  }
 }
 
 function fitPlotCanvas(plotCanvas) {
@@ -1716,6 +1824,7 @@ function updatePendulumLengthFromCalibration(bob) {
 function resetExperiment() {
   app.history = [];
   app.estimator = null;
+  app.neuralResult = null;
   app.lastPos = null;
   app.smoothPos = null;
   app.lostFrames = 0;
@@ -1746,6 +1855,7 @@ function resetExperimentSession() {
   app.targetSeed = null;
   app.targetSeedFrames = 0;
   app.lastMeasurement = null;
+  app.neuralResult = null;
   app.selectionPausedVideo = false;
   resetExperimentInputs();
   resetExperiment();
@@ -1892,11 +2002,17 @@ async function discoverEquation() {
 }
 
 async function discoverNeural() {
-  const mode = isPendulumMode()
-    ? "pendulum"
-    : (els.experiment.value === "spring_mass" ? "spring" : null);
+  const neuralModes = {
+    pendulum: { mode: "pendulum", series: "measured" },
+    spring_mass: { mode: "spring", series: "measured" },
+    freefall: { mode: "freefall", series: "y" },
+    projectile: { mode: "projectile", series: "y" },
+    linear_motion: { mode: "linear", series: "measured" },
+  };
+  const spec = neuralModes[els.experiment.value] || null;
+  const mode = spec?.mode || null;
   if (!mode) {
-    els.equationOutput.textContent = `${profile().name}: Neural ODE discovery is available for pendulum and spring-mass modes.`;
+    els.equationOutput.textContent = `${profile().name}: Neural ODE discovery is available for pendulum, spring-mass, free-fall, projectile, and linear cart modes.`;
     return;
   }
   if (app.history.length < 100) {
@@ -1908,23 +2024,27 @@ async function discoverNeural() {
     const res = await fetch("/api/discover_neural", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ frac: 0.5, mode, rows: app.history }),
+      body: JSON.stringify({ frac: 0.5, mode, series: spec.series, rows: app.history }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "analysis failed");
     const isSpring = data.mode === "spring";
+    app.neuralResult = data;
     els.equationOutput.textContent = [
-      "[Neural ODE + GP symbolic regression]",
+      `[Neural ODE + ${data.symbolic_backend || "symbolic regression"}]`,
       data.equation,
       "",
       `${data.const_name} cross-check:`,
-      `  Neural ODE + GP-SR : ${data.const_neural_ode.toFixed(2)}`,
-      `  STLSQ (SINDy)      : ${data.const_stlsq.toFixed(2)}`,
-      `  Period (2pi/T)^2   : ${data.const_period.toFixed(2)}`,
-      `damping              : ${data.damping.toFixed(4)}`,
-      `amplitude            : ${data.amplitude.toFixed(isSpring ? 3 : 0)}${isSpring ? "" : " deg"}`,
+      `  Neural ODE + SR    : ${fmt(data.const_neural_ode, 2)}`,
+      `  STLSQ (SINDy)      : ${fmt(data.const_stlsq, 2)}`,
+      `  Period (2pi/T)^2   : ${fmt(data.const_period, 2)}`,
+      `damping / v term     : ${fmt(data.damping, 4)}`,
+      `amplitude/span       : ${fmt(data.amplitude, isSpring ? 3 : 2)}${data.mode === "pendulum" ? " deg" : ""}`,
+      "phase plot overlay   : vector field + Neural ODE prediction",
     ].join("\n");
+    drawPlots();
   } catch (err) {
+    app.neuralResult = null;
     els.equationOutput.textContent =
       `Neural ODE failed: ${err.message}\nInstall ML deps with requirements-ml.txt and run locally.`;
   }

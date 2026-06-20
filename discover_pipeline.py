@@ -18,7 +18,44 @@ import argparse
 
 import numpy as np
 
-from neural_ode import train_neural_ode, sample_vector_field, _simulate
+from neural_ode import train_neural_ode, sample_vector_field, predict_trajectory, _simulate
+
+
+def run_pysr_symbolic(theta, omega, acc, seed=0):
+    """
+    PySR symbolic regression.
+
+    PySR is the preferred backend for the proposal. It requires Julia at runtime,
+    so callers should catch failures and fall back to gplearn in local classroom
+    environments where Julia cannot initialize cleanly.
+    """
+    from pysr import PySRRegressor
+
+    X = np.stack([theta, omega], axis=1)
+    model = PySRRegressor(
+        niterations=80,
+        binary_operators=["+", "-", "*"],
+        unary_operators=["sin", "cos"],
+        model_selection="best",
+        maxsize=18,
+        random_state=seed,
+        verbosity=0,
+        progress=False,
+    )
+    model.fit(X, acc, variable_names=["theta", "omega"])
+    basis = np.stack([np.sin(theta), omega, np.ones_like(theta)], axis=1)
+    coef, *_ = np.linalg.lstsq(basis, acc, rcond=None)
+    return model, coef
+
+
+def run_symbolic(theta, omega, acc, generations=25, seed=0):
+    """Use PySR first, then fall back to gplearn if Julia/PySR is unavailable."""
+    try:
+        model, coef = run_pysr_symbolic(theta, omega, acc, seed=seed)
+        return model, coef, "PySR"
+    except Exception:
+        est, coef = run_gp_symbolic(theta, omega, acc, generations=generations, seed=seed)
+        return est, coef, "gplearn fallback"
 
 
 def run_gp_symbolic(theta, omega, acc, generations=25, seed=0):
@@ -95,6 +132,31 @@ def gp_to_sympy(program):
         return f"(simplify failed: {exc})"
 
 
+def compact_vector_field(func, pos, vel, n_side=13):
+    """Small regular vector-field grid for the browser phase plot."""
+    pmin, pmax = float(np.min(pos)), float(np.max(pos))
+    vmin, vmax = float(np.min(vel)), float(np.max(vel))
+    if abs(pmax - pmin) < 1e-9:
+        pmin -= 1.0
+        pmax += 1.0
+    if abs(vmax - vmin) < 1e-9:
+        vmin -= 1.0
+        vmax += 1.0
+    pp = np.linspace(pmin, pmax, n_side)
+    vv = np.linspace(vmin, vmax, n_side)
+    pgrid, vgrid = np.meshgrid(pp, vv)
+    acc = func.accel(pgrid.ravel(), vgrid.ravel())
+    return [
+        {
+            "pos": float(p),
+            "vel": float(v),
+            "dpos": float(v),
+            "dvel": float(a),
+        }
+        for p, v, a in zip(pgrid.ravel(), vgrid.ravel(), acc)
+    ]
+
+
 def discover_from_series(t, pos_meas, frac=0.5, mode="pendulum"):
     """
     Full pipeline on a (time, position) series -> result dict.
@@ -124,10 +186,12 @@ def discover_from_series(t, pos_meas, frac=0.5, mode="pendulum"):
     period = 2 * np.median(np.diff(tcut[zc])) if len(zc) > 3 else float("nan")
     w2_period = (2 * np.pi / period) ** 2 if period and period > 0 else float("nan")
 
-    # Neural ODE + GP-SR (generic)
+    # Neural ODE + symbolic regression (generic)
     func = train_neural_ode(tcut, pos, vel, iters=1500, lr=1.5e-3, window=10, verbose=False)
     pg, vg, acc = sample_vector_field(func, pos, vel, n_grid=600)
-    est, _ = run_gp_symbolic(pg, vg, acc)
+    est, _, symbolic_backend = run_symbolic(pg, vg, acc)
+    prediction = predict_trajectory(func, tcut, pos[0], vel[0])
+    vector_field = compact_vector_field(func, pos, vel)
 
     if mode == "spring":
         # refine on linear basis [x, v, 1] -> k/m, damping
@@ -146,6 +210,41 @@ def discover_from_series(t, pos_meas, frac=0.5, mode="pendulum"):
             "damping": float(-coef[1]),
             "amplitude": float(np.max(np.abs(pos - pos.mean()))),
             "samples": int(len(pos)),
+            "symbolic_backend": symbolic_backend,
+            "prediction": prediction,
+            "vector_field": vector_field,
+        }
+
+    if mode in ("freefall", "projectile", "linear"):
+        basis = np.stack([pg, vg, np.ones_like(pg)], axis=1)
+        coef, *_ = np.linalg.lstsq(basis, acc, rcond=None)
+        equation = f"s_ddot = {coef[0]:+.3f}*s {coef[1]:+.3f}*v {coef[2]:+.3f}"
+        if mode == "freefall":
+            const_name = "g"
+            const_value = float(coef[2])
+            description = "Free-fall vertical acceleration"
+        elif mode == "projectile":
+            const_name = "g"
+            const_value = float(-coef[2])
+            description = "Projectile vertical acceleration"
+        else:
+            const_name = "a"
+            const_value = float(coef[2])
+            description = "Linear cart acceleration"
+        return {
+            "mode": mode,
+            "equation": equation,
+            "const_neural_ode": const_value,
+            "const_stlsq": None,
+            "const_period": None,
+            "const_name": const_name,
+            "damping": float(-coef[1]),
+            "amplitude": float(np.max(pos) - np.min(pos)),
+            "samples": int(len(pos)),
+            "description": description,
+            "symbolic_backend": symbolic_backend,
+            "prediction": prediction,
+            "vector_field": vector_field,
         }
 
     # pendulum
@@ -164,6 +263,9 @@ def discover_from_series(t, pos_meas, frac=0.5, mode="pendulum"):
         "damping": float(-coef[1]),
         "amplitude": float(np.degrees(np.max(np.abs(pos - pos.mean())))),
         "samples": int(len(pos)),
+        "symbolic_backend": symbolic_backend,
+        "prediction": prediction,
+        "vector_field": vector_field,
     }
 
 

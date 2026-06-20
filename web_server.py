@@ -95,7 +95,14 @@ def neural_payload(payload: dict) -> dict:
         raise ValueError("not enough rows for Neural ODE discovery (need 60+)")
 
     t = np.array([float(r["time"]) for r in rows], dtype=float)
-    theta = np.array([float(r["measured"]) for r in rows], dtype=float)
+    series = payload.get("series", "measured")
+    if series == "y":
+        values = [r.get("measuredY", r.get("y")) for r in rows]
+    else:
+        values = [r.get("measured", r.get("primary")) for r in rows]
+    theta = np.array([float(v) for v in values], dtype=float)
+    if np.any(~np.isfinite(t)) or np.any(~np.isfinite(theta)):
+        raise ValueError("time/series contains non-finite values")
     if np.any(np.diff(t) <= 0):
         order = np.argsort(t)
         t, theta = t[order], theta[order]

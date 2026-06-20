@@ -1,5 +1,6 @@
 -r requirements.txt
 torch
 torchdiffeq
+pysr
 gplearn
 scikit-learn
