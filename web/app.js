@@ -563,47 +563,38 @@ async function startVideoFile(file) {
   video.playbackRate = 0.6; // keep per-frame processing from dropping frames
   setStatus("VIDEO (set color+calib, then Reset)", true);
   await video.play();
-  if (video.requestVideoFrameCallback) {
-    video.requestVideoFrameCallback(processVideoFrame);
-  } else {
-    // Fallback: poll currentTime on rAF (less frame-accurate but works).
-    requestAnimationFrame(pollVideoFrame);
-  }
+  // The <video> is hidden, so requestVideoFrameCallback won't fire; poll
+  // currentTime on rAF instead. drawImage still works on a hidden playing video.
+  requestAnimationFrame(videoLoop);
 }
 
-function processVideoFrame(now, metadata) {
+function videoLoop() {
   if (!app.videoFileMode) return;
   const slow = Math.max(1, Number(els.slowmo.value) || 1);
-  const mediaTime = metadata.mediaTime;
-  resizeCanvas();
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const result = trackMarker();
-  app.lastMeasurement = result;
-  drawOverlay(result);
-  if (result.detected && app.lastMediaTime !== null) {
-    const dt = (mediaTime - app.lastMediaTime) / slow; // video time -> real time
-    if (dt > 0) {
-      const est = currentEstimator();
-      est.setDt(dt);
-      const row = updateModel(est, result);
-      if (row) {
-        app.history.push(row);
-        if (app.history.length > 6000) app.history.shift();
+  const mediaTime = video.currentTime;
+  if (app.lastMediaTime === null || mediaTime !== app.lastMediaTime) {
+    resizeCanvas();
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const result = trackMarker();
+    app.lastMeasurement = result;
+    drawOverlay(result);
+    if (result.detected && app.lastMediaTime !== null) {
+      const dt = (mediaTime - app.lastMediaTime) / slow; // video time -> real time
+      if (dt > 0) {
+        const est = currentEstimator();
+        est.setDt(dt);
+        const row = updateModel(est, result);
+        if (row) {
+          app.history.push(row);
+          if (app.history.length > 6000) app.history.shift();
+        }
       }
     }
+    app.lastMediaTime = mediaTime;
+    drawPlots();
+    updateReadout(result);
   }
-  app.lastMediaTime = mediaTime;
-  drawPlots();
-  updateReadout(result);
-  if (video.requestVideoFrameCallback) {
-    video.requestVideoFrameCallback(processVideoFrame);
-  }
-}
-
-function pollVideoFrame() {
-  if (!app.videoFileMode) return;
-  processVideoFrame(0, { mediaTime: video.currentTime });
-  requestAnimationFrame(pollVideoFrame);
+  requestAnimationFrame(videoLoop);
 }
 
 function resizeCanvas() {
