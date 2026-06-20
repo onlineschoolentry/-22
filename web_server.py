@@ -149,7 +149,7 @@ class MeasurementWebHandler(SimpleHTTPRequestHandler):
         if path == "/frame":
             self._receive_frame()
             return
-        if path != "/api/discover":
+        if path not in ("/api/discover", "/api/discover_neural"):
             self.send_error(404)
             return
 
@@ -158,7 +158,10 @@ class MeasurementWebHandler(SimpleHTTPRequestHandler):
             if length <= 0 or length > 20_000_000:
                 raise ValueError("invalid request size")
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            result = analyze_payload(payload)
+            if path == "/api/discover_neural":
+                result = neural_payload(payload)   # local only (needs torch)
+            else:
+                result = analyze_payload(payload)
             self._json_response(200, result)
         except Exception as exc:
             self._json_response(400, {"error": str(exc)})
@@ -240,6 +243,24 @@ def analyze_payload(payload: dict) -> dict:
         "sigma_meas": float(smooth.sigma_meas),
         "q_jerk": float(smooth.q_jerk),
     }
+
+
+def neural_payload(payload: dict) -> dict:
+    """Full Neural ODE + GP symbolic regression discovery (local only; needs torch)."""
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or len(rows) < 60:
+        raise ValueError("not enough rows for Neural ODE discovery (need 60+)")
+    t = np.array([float(r["time"]) for r in rows], dtype=float)
+    theta = np.array([float(r["measured"]) for r in rows], dtype=float)
+    if np.any(np.diff(t) <= 0):
+        order = np.argsort(t)
+        t, theta = t[order], theta[order]
+    try:
+        from discover_pipeline import discover_from_series
+    except Exception as exc:
+        raise RuntimeError(f"Neural ODE deps unavailable (run locally with torch): {exc}")
+    frac = float(payload.get("frac", 0.5))
+    return discover_from_series(t, theta, frac=frac)
 
 
 def serve(host: str, port: int, use_https: bool):

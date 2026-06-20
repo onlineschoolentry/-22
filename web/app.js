@@ -31,6 +31,7 @@ const els = {
   lambdaThreshold: document.getElementById("lambdaThreshold"),
   readout: document.getElementById("readout"),
   equationOutput: document.getElementById("equationOutput"),
+  discoverNeural: document.getElementById("discoverNeural"),
   plotTheta: document.getElementById("plotTheta"),
   plotOmega: document.getElementById("plotOmega"),
   plotAlpha: document.getElementById("plotAlpha"),
@@ -1701,6 +1702,41 @@ async function discoverEquation() {
   }
 }
 
+async function discoverNeural() {
+  if (!isPendulumMode()) {
+    els.equationOutput.textContent = `${profile().name}: Neural ODE 발견은 진자 모드 전용입니다.`;
+    return;
+  }
+  if (app.history.length < 100) {
+    els.equationOutput.textContent = "샘플 부족. 큰 진폭으로 10초+ 기록 후 다시 실행하세요.";
+    return;
+  }
+  els.equationOutput.textContent = "Neural ODE 학습 중... (1~2분 소요, 그대로 기다려주세요)";
+  try {
+    const res = await fetch("/api/discover_neural", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ frac: 0.5, rows: app.history }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "analysis failed");
+    els.equationOutput.textContent = [
+      "[Neural ODE + 유전프로그래밍 기호회귀]",
+      data.equation,
+      "",
+      "g/L 교차검증 (3가지 독립 방법):",
+      `  Neural ODE + GP-SR : ${data.g_over_L_neural_ode.toFixed(2)}`,
+      `  STLSQ (SINDy)      : ${data.g_over_L_stlsq.toFixed(2)}`,
+      `  Period (2pi/T)^2   : ${data.g_over_L_period.toFixed(2)}`,
+      `gamma (damping)      : ${data.gamma.toFixed(4)}`,
+      `amplitude            : ${data.amplitude_deg.toFixed(0)} deg`,
+    ].join("\n");
+  } catch (err) {
+    els.equationOutput.textContent =
+      `Neural ODE 실패: ${err.message}\n로컬에서 'python web_server.py --http' 실행(torch 필요).`;
+  }
+}
+
 async function fitExperimentModel() {
   if (!isPendulumMode()) {
     els.equationOutput.textContent = `${profile().name}: ${experimentNote()}\nCSV export includes the measured time series.`;
@@ -1842,6 +1878,7 @@ els.calibrate.addEventListener("click", startCalibration);
 els.reset.addEventListener("click", resetExperiment);
 els.saveCsv.addEventListener("click", saveCsv);
 els.discover.addEventListener("click", fitExperimentModel);
+if (els.discoverNeural) els.discoverNeural.addEventListener("click", discoverNeural);
 canvas.addEventListener("click", handleCanvasClick);
 els.experiment.addEventListener("change", () => {
   resetExperiment();

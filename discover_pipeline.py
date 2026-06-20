@@ -95,6 +95,52 @@ def gp_to_sympy(program):
         return f"(simplify failed: {exc})"
 
 
+def discover_from_series(t, theta_meas, frac=0.5):
+    """
+    Full pipeline on a (time, measured-theta) series -> result dict.
+    Used by the local web backend's Neural ODE discovery endpoint.
+    """
+    from smoother import KinematicSmoother, estimate_measurement_noise
+    from equation_discovery import build_pendulum_library, stlsq
+
+    t = np.asarray(t, float)
+    theta_meas = np.asarray(theta_meas, float)
+    cut = int(len(t) * frac)
+    t, theta_meas = t[:cut], theta_meas[:cut]
+    dt = float(np.median(np.diff(t)))
+    sm = KinematicSmoother(sigma_meas=estimate_measurement_noise(theta_meas))
+    sm.tune_q(theta_meas, t=t)
+    s = sm.smooth(theta_meas, t=t, dt=dt)
+    sl = slice(15, -15)
+    theta, omega, accel = s.s[sl], s.s_dot[sl], s.s_ddot[sl]
+    tcut = t[sl]
+
+    # STLSQ baseline + period cross-checks
+    lib, names = build_pendulum_library(theta, omega)
+    r = stlsq(lib, accel, names, lambda_threshold=2.0)
+    gl_stlsq = -dict(zip(r.feature_names, r.coefficients)).get("sin(theta)", 0.0)
+    x = theta - theta.mean()
+    zc = np.where(np.diff(np.sign(x)))[0]
+    period = 2 * np.median(np.diff(tcut[zc])) if len(zc) > 3 else float("nan")
+    gl_period = (2 * np.pi / period) ** 2 if period and period > 0 else float("nan")
+
+    # Neural ODE + GP-SR
+    func = train_neural_ode(tcut, theta, omega, iters=1500, lr=1.5e-3,
+                            window=10, verbose=False)
+    thg, omg, acc = sample_vector_field(func, theta, omega, n_grid=600)
+    est, coef = run_gp_symbolic(thg, omg, acc)
+
+    return {
+        "equation": f"theta_ddot = {coef[0]:+.2f}*sin(theta) {coef[1]:+.3f}*omega",
+        "g_over_L_neural_ode": float(-coef[0]),
+        "gamma": float(-coef[1]),
+        "g_over_L_stlsq": float(gl_stlsq),
+        "g_over_L_period": float(gl_period),
+        "amplitude_deg": float(np.degrees(np.max(np.abs(theta - theta.mean())))),
+        "samples": int(len(theta)),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--synthetic", action="store_true")
