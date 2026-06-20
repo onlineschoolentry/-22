@@ -1,0 +1,10 @@
+# Offline Neural ODE + Symbolic Regression pipeline (run_demo.py, discover_pipeline.py).
+# Not needed for the web server (Render uses numpy/scipy/pandas only).
+numpy
+scipy
+pandas
+sympy
+matplotlib
+torch
+torchdiffeq
+gplearn
