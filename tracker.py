@@ -42,6 +42,7 @@ class PendulumTracker:
     }
 
     def __init__(self, color: str = "orange"):
+        self.color_name = color
         preset = self.COLOR_PRESETS.get(color, self.COLOR_PRESETS["orange"])
         self.hsv_lower = np.array(preset[0])
         self.hsv_upper = np.array(preset[1])
@@ -65,9 +66,14 @@ class PendulumTracker:
         # last known position so detection does not hop to other same-color
         # objects. Released only after the target is lost for a while.
         self.last_position = None
+        self.target_seed = None
         self.max_jump = 110          # px; keep lock tight so face/lips are not reacquired
         self.reacquire_after = 60    # frames lost before the lock is released
         self._lost_frames = 0
+        self.color_center_h = None
+        self.color_h_tol = 13
+        self.color_s_lo = int(self.hsv_lower[1])
+        self.color_v_lo = int(self.hsv_lower[2])
 
         self.calibration_mode = False
         self._calib_clicks = []
@@ -123,7 +129,7 @@ class PendulumTracker:
         return mask
 
     def pick_color_at(self, frame: np.ndarray, px: int, py: int,
-                      half: int = 8, h_tol: int = 9) -> tuple:
+                      half: int = 12, h_tol: int = 13) -> tuple:
         """
         Sample the marker color at a clicked pixel and set the HSV range around it.
 
@@ -135,10 +141,15 @@ class PendulumTracker:
         x1, x2 = max(0, px - half), min(w, px + half + 1)
         y1, y2 = max(0, py - half), min(h, py + half + 1)
         patch = hsv[y1:y2, x1:x2].reshape(-1, 3)
-        h_med, s_med, v_med = (int(np.median(patch[:, i])) for i in range(3))
+        strong = patch[(patch[:, 1] >= 55) & (patch[:, 2] >= 35)]
+        if len(strong) >= 8:
+            patch = strong
+        h_med = int(round(self._circular_hue_mean(patch[:, 0].astype(float))))
+        s_med = int(np.median(patch[:, 1]))
+        v_med = int(np.median(patch[:, 2]))
 
-        s_lo = max(70, s_med - 60)
-        v_lo = max(50, v_med - 90)
+        s_lo = max(60, s_med - 85)
+        v_lo = max(40, v_med - 130)
         lo_h, hi_h = h_med - h_tol, h_med + h_tol
 
         self.hsv_lower2 = None
@@ -159,7 +170,13 @@ class PendulumTracker:
 
         # New target color: drop any existing lock so it re-acquires cleanly,
         # seeding the lock at the click so it grabs the clicked object first.
+        self.color_name = "sampled"
+        self.color_center_h = float(h_med)
+        self.color_h_tol = h_tol
+        self.color_s_lo = int(s_lo)
+        self.color_v_lo = int(v_lo)
         self.last_position = (float(px), float(py))
+        self.target_seed = (float(px), float(py))
         self._lost_frames = 0
         return h_med, s_med, v_med
 
@@ -174,36 +191,53 @@ class PendulumTracker:
         """Detect the colored bob and return pixel coordinates."""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = self._compute_mask(hsv)
+        quality_map = self._quality_map(hsv)
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         # Candidate centroids for every blob above the area threshold.
         candidates = []
+        frame_h, frame_w = frame.shape[:2]
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area < self.min_contour_area:
                 continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            if w > frame_w * 0.45 or h > frame_h * 0.45:
+                continue
+            aspect = max(w, h) / max(min(w, h), 1)
+            if aspect > 4.5:
+                continue
+            density = area / max(w * h, 1)
+            if density < 0.12:
+                continue
             m = cv2.moments(cnt)
             if m["m00"] == 0:
                 continue
-            candidates.append((m["m10"] / m["m00"], m["m01"] / m["m00"], area))
+            local_mask = np.zeros((h, w), dtype=np.uint8)
+            shifted = cnt - np.array([[[x, y]]])
+            cv2.drawContours(local_mask, [shifted], -1, 255, -1)
+            q_roi = quality_map[y:y + h, x:x + w]
+            avg_q = float(cv2.mean(q_roi, mask=local_mask)[0]) / 1000.0
+            aspect_score = 1.0 / aspect
+            density_score = np.clip((density - 0.12) / 0.55, 0.0, 1.0)
+            score = np.sqrt(area) * 4.2 + avg_q * 120.0 + density_score * 50.0 + aspect_score * 40.0
+            cx = m["m10"] / m["m00"]
+            cy = m["m01"] / m["m00"]
+            if self.last_position is not None:
+                lx, ly = self.last_position
+                d = np.sqrt((cx - lx) ** 2 + (cy - ly) ** 2)
+                score += max(0.0, 85.0 - d * 0.55)
+            if self.target_seed is not None:
+                sx, sy = self.target_seed
+                d = np.sqrt((cx - sx) ** 2 + (cy - sy) ** 2)
+                score += max(0.0, 140.0 - d * 0.7)
+            candidates.append((cx, cy, area, score))
 
         if not candidates:
             return self._lose_target()
 
-        if self.last_position is not None:
-            # Locked: take the blob nearest the last position, and ignore far
-            # same-color objects (teleports beyond max_jump are treated as a miss).
-            lx, ly = self.last_position
-            cx, cy, area = max(
-                candidates,
-                key=lambda c: c[2] - 0.9 * np.sqrt((c[0] - lx) ** 2 + (c[1] - ly) ** 2),
-            )
-            if (cx - lx) ** 2 + (cy - ly) ** 2 > self.max_jump ** 2:
-                return self._lose_target()
-        else:
-            # Unlocked: acquire the largest blob.
-            cx, cy, area = max(candidates, key=lambda c: c[2])
+        cx, cy, area, _ = max(candidates, key=lambda c: c[3])
 
         cx_sub, cy_sub = self._subpixel_refine(frame, cx, cy, mask)
         self.last_position = (cx_sub, cy_sub)
@@ -214,6 +248,57 @@ class PendulumTracker:
             pixel_y=cy_sub,
             contour_area=area,
         )
+
+    def _quality_map(self, hsv: np.ndarray) -> np.ndarray:
+        h = hsv[:, :, 0].astype(np.float32)
+        s = hsv[:, :, 1].astype(np.float32)
+        v = hsv[:, :, 2].astype(np.float32)
+
+        if self.color_center_h is not None:
+            center = self.color_center_h
+            h_tol = max(float(self.color_h_tol), 1.0)
+            s_lo = float(self.color_s_lo)
+            v_lo = float(self.color_v_lo)
+            matched = self._compute_mask(hsv) > 0
+            h_score = np.clip(1.0 - self._hue_distance(h, center) / h_tol, 0.0, 1.0)
+        elif self.color_name == "red":
+            d = np.minimum(h, 180.0 - h)
+            matched = (d <= 14.0) & (s >= 85.0) & (v >= 55.0)
+            h_score = np.clip(1.0 - d / 14.0, 0.0, 1.0)
+            s_lo = 85.0
+            v_lo = 55.0
+        else:
+            lo_h = float(self.hsv_lower[0])
+            hi_h = float(self.hsv_upper[0])
+            center = (lo_h + hi_h) / 2.0
+            h_tol = max((hi_h - lo_h) / 2.0, 1.0)
+            matched = self._compute_mask(hsv) > 0
+            h_score = np.clip(1.0 - np.abs(h - center) / h_tol, 0.0, 1.0)
+            s_lo = float(self.hsv_lower[1])
+            v_lo = float(self.hsv_lower[2])
+
+        s_score = np.clip((s - s_lo) / max(255.0 - s_lo, 1.0), 0.0, 1.0)
+        v_score = np.clip((v - v_lo) / max(255.0 - v_lo, 1.0), 0.0, 1.0)
+        quality = (0.55 * h_score + 0.27 * s_score + 0.18 * v_score) * 1000.0
+        quality[~matched] = 0.0
+        return quality.astype(np.uint16)
+
+    @staticmethod
+    def _hue_distance(a: np.ndarray, b: float) -> np.ndarray:
+        d = np.abs(a - b)
+        return np.minimum(d, 180.0 - d)
+
+    @staticmethod
+    def _circular_hue_mean(values: np.ndarray) -> float:
+        if len(values) == 0:
+            return 0.0
+        angles = values * np.pi / 90.0
+        x = float(np.cos(angles).mean())
+        y = float(np.sin(angles).mean())
+        angle = np.arctan2(y, x)
+        if angle < 0:
+            angle += np.pi * 2
+        return float(angle * 90.0 / np.pi)
 
     def _subpixel_refine(
         self,
@@ -322,6 +407,8 @@ class PendulumTracker:
         """Manually set HSV detection range."""
         self.hsv_lower = np.array(lower)
         self.hsv_upper = np.array(upper)
+        self.color_name = "custom"
+        self.color_center_h = None
 
     def get_mask_preview(self, frame: np.ndarray) -> np.ndarray:
         """Return the binary mask for HSV tuning."""

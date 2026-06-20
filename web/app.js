@@ -5,6 +5,7 @@ const ctx = canvas.getContext("2d", { willReadFrequently: true });
 const els = {
   statusDot: document.getElementById("statusDot"),
   statusText: document.getElementById("statusText"),
+  cameraPanel: document.querySelector(".cameraPanel"),
   startCamera: document.getElementById("startCamera"),
   phoneCamera: document.getElementById("phoneCamera"),
   uploadVideo: document.getElementById("uploadVideo"),
@@ -207,6 +208,9 @@ const app = {
   phonePolling: false,
   phoneLastFrame: 0,
   videoFileMode: false,
+  videoObjectUrl: null,
+  videoLoopHandle: null,
+  videoLoadToken: 0,
   lastMediaTime: null,
   running: false,
   lastTs: null,
@@ -228,6 +232,7 @@ const app = {
   lastMeasurement: null,
   // Marker color picked by click (overrides the preset dropdown when set).
   markerHsv: null,
+  targetSeed: null,
   picking: false,
   // Spatial lock: stick to the blob near the last position, ignore far
   // same-color objects. Released after the target is lost for a while.
@@ -491,6 +496,7 @@ function currentEstimator() {
 }
 
 async function startCamera() {
+  stopVideoFileMode();
   if (app.stream) app.stream.getTracks().forEach((track) => track.stop());
   app.phoneMode = false;
   app.videoFileMode = false;
@@ -506,6 +512,7 @@ async function startCamera() {
 }
 
 function startPhoneCamera() {
+  stopVideoFileMode();
   if (app.stream) {
     app.stream.getTracks().forEach((track) => track.stop());
     app.stream = null;
@@ -545,6 +552,8 @@ function startPhonePolling() {
 }
 
 async function startVideoFile(file) {
+  stopVideoFileMode({ keepVideoElement: true, keepLoadToken: true });
+  const loadToken = ++app.videoLoadToken;
   if (app.stream) {
     app.stream.getTracks().forEach((track) => track.stop());
     app.stream = null;
@@ -555,21 +564,71 @@ async function startVideoFile(file) {
   app.lastMediaTime = null;
   resetExperiment();
   video.srcObject = null;
-  video.src = URL.createObjectURL(file);
+  video.pause();
+  if (app.videoObjectUrl) URL.revokeObjectURL(app.videoObjectUrl);
+  app.videoObjectUrl = URL.createObjectURL(file);
+  video.removeAttribute("src");
+  video.load();
+  video.src = app.videoObjectUrl;
   video.muted = true;
+  video.playsInline = true;
+  video.preload = "auto";
   // Loop so the user can set color + calibration while it replays, then Reset
   // and capture one clean pass. The loop seam has dt<0 and is skipped.
   video.loop = true;
   video.playbackRate = 0.6; // keep per-frame processing from dropping frames
-  setStatus("VIDEO (set color+calib, then Reset)", true);
-  await video.play();
-  // The <video> is hidden, so requestVideoFrameCallback won't fire; poll
-  // currentTime on rAF instead. drawImage still works on a hidden playing video.
-  requestAnimationFrame(videoLoop);
+  setStatus("LOADING VIDEO", false);
+  drawCanvasMessage(`Loading video: ${file.name}`);
+
+  const support = video.canPlayType(file.type || "video/mp4");
+  if (file.type && support === "") {
+    els.equationOutput.textContent = [
+      `This browser may not support the selected video type: ${file.type}`,
+      "Use H.264 MP4 if the file does not open.",
+      "Phone .MOV files often use HEVC, which Chrome on Windows may reject.",
+    ].join("\n");
+  }
+
+  try {
+    await waitForVideoReady(video, 10000);
+    if (loadToken !== app.videoLoadToken) return;
+    resizeCanvas();
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    setStatus("VIDEO READY", true);
+    els.equationOutput.textContent = [
+      `Video loaded: ${file.name}`,
+      `duration: ${Number.isFinite(video.duration) ? video.duration.toFixed(2) : "-"} s`,
+      "Set marker color and calibration, then Reset for a clean pass.",
+    ].join("\n");
+
+    try {
+      await video.play();
+      setStatus("VIDEO RUN", true);
+    } catch (err) {
+      setStatus("VIDEO READY", true);
+      els.equationOutput.textContent += `\nPlayback did not auto-start: ${err.message}`;
+    }
+    app.videoLoopHandle = requestAnimationFrame(videoLoop);
+  } catch (err) {
+    app.videoFileMode = false;
+    setStatus("VIDEO ERROR", false);
+    drawCanvasMessage("Video could not be loaded. Try H.264 MP4.");
+    els.equationOutput.textContent = [
+      `Video load failed: ${err.message}`,
+      "",
+      "Recommended format: MP4 / H.264 / AAC.",
+      "If this came from a phone, export or convert it as H.264 instead of HEVC.",
+    ].join("\n");
+    throw err;
+  }
 }
 
 function videoLoop() {
   if (!app.videoFileMode) return;
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    app.videoLoopHandle = requestAnimationFrame(videoLoop);
+    return;
+  }
   const slow = Math.max(1, Number(els.slowmo.value) || 1);
   const mediaTime = video.currentTime;
   if (app.lastMediaTime === null || mediaTime !== app.lastMediaTime) {
@@ -594,7 +653,66 @@ function videoLoop() {
     drawPlots();
     updateReadout(result);
   }
-  requestAnimationFrame(videoLoop);
+  app.videoLoopHandle = requestAnimationFrame(videoLoop);
+}
+
+function stopVideoFileMode(options = {}) {
+  if (!options.keepLoadToken) app.videoLoadToken += 1;
+  if (app.videoLoopHandle !== null) {
+    cancelAnimationFrame(app.videoLoopHandle);
+    app.videoLoopHandle = null;
+  }
+  app.videoFileMode = false;
+  app.lastMediaTime = null;
+  video.pause();
+  if (!options.keepVideoElement) {
+    video.removeAttribute("src");
+    video.load();
+    if (app.videoObjectUrl) {
+      URL.revokeObjectURL(app.videoObjectUrl);
+      app.videoObjectUrl = null;
+    }
+  }
+}
+
+function waitForVideoReady(target, timeoutMs = 10000) {
+  if (target.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => cleanup(() => reject(new Error("Timed out while loading video metadata/data."))), timeoutMs);
+    const onReady = () => cleanup(resolve);
+    const onError = () => cleanup(() => reject(new Error(videoErrorMessage(target.error))));
+    const cleanup = (done) => {
+      window.clearTimeout(timeout);
+      target.removeEventListener("loadeddata", onReady);
+      target.removeEventListener("canplay", onReady);
+      target.removeEventListener("error", onError);
+      done();
+    };
+    target.addEventListener("loadeddata", onReady, { once: true });
+    target.addEventListener("canplay", onReady, { once: true });
+    target.addEventListener("error", onError, { once: true });
+    target.load();
+  });
+}
+
+function videoErrorMessage(error) {
+  if (!error) return "Unknown media error.";
+  const names = {
+    1: "Video loading was aborted.",
+    2: "Network error while loading video.",
+    3: "Video decode failed. The codec may be unsupported.",
+    4: "Video source is not supported by this browser.",
+  };
+  return names[error.code] || `Media error code ${error.code}.`;
+}
+
+function drawCanvasMessage(message) {
+  resizeCanvas();
+  ctx.fillStyle = "#020304";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#e7edf3";
+  ctx.font = "16px Consolas, monospace";
+  ctx.fillText(message, 24, 42);
 }
 
 function resizeCanvas() {
@@ -676,30 +794,27 @@ function trackMarker() {
   let x1 = W;
   let y1 = Hh;
   const locked = app.lastPos && app.lostFrames <= app.reacquireAfter;
-  if (locked) {
-    const r = app.maxJump;
-    x0 = Math.max(0, Math.floor(app.lastPos.x - r));
-    x1 = Math.min(W, Math.ceil(app.lastPos.x + r));
-    y0 = Math.max(0, Math.floor(app.lastPos.y - r));
-    y1 = Math.min(Hh, Math.ceil(app.lastPos.y + r));
-  }
 
   const cols = Math.max(1, Math.ceil((x1 - x0) / step));
   const rows = Math.max(1, Math.ceil((y1 - y0) / step));
   const mask = new Uint8Array(cols * rows);
+  const quality = new Uint16Array(cols * rows);
 
   for (let gy = 0; gy < rows; gy++) {
     const y = Math.min(Hh - 1, y0 + gy * step);
     for (let gx = 0; gx < cols; gx++) {
       const x = Math.min(W - 1, x0 + gx * step);
       const i = (y * W + x) * 4;
-      if (matchColor(rgbToHsv(data[i], data[i + 1], data[i + 2]))) {
-        mask[gy * cols + gx] = 1;
+      const q = colorQuality(rgbToHsv(data[i], data[i + 1], data[i + 2]));
+      if (q > 0) {
+        const mi = gy * cols + gx;
+        mask[mi] = 1;
+        quality[mi] = q;
       }
     }
   }
 
-  const blob = bestBlob(mask, cols, rows, x0, y0, step, locked);
+  const blob = bestBlob(mask, quality, cols, rows, x0, y0, step, locked, W, Hh);
   if (!blob || blob.count < 8) {
     app.lostFrames += 1;
     if (app.lostFrames > app.reacquireAfter) app.lastPos = null;
@@ -709,17 +824,18 @@ function trackMarker() {
   let cx = blob.x;
   let cy = blob.y;
   if (app.smoothPos) {
-    const alpha = locked ? 0.68 : 1.0;
+    const jump = Math.hypot(cx - app.smoothPos.x, cy - app.smoothPos.y);
+    const alpha = locked && jump <= app.maxJump ? 0.68 : 1.0;
     cx = app.smoothPos.x * (1 - alpha) + cx * alpha;
     cy = app.smoothPos.y * (1 - alpha) + cy * alpha;
   }
   app.smoothPos = { x: cx, y: cy };
   app.lastPos = { x: cx, y: cy };
   app.lostFrames = 0;
-  return { detected: true, x: cx, y: cy, area: blob.count * step * step };
+  return { detected: true, x: cx, y: cy, area: blob.count * step * step, confidence: blob.confidence };
 }
 
-function bestBlob(mask, cols, rows, x0, y0, step, locked) {
+function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frameH) {
   const seen = new Uint8Array(mask.length);
   const qx = [];
   const qy = [];
@@ -734,6 +850,8 @@ function bestBlob(mask, cols, rows, x0, y0, step, locked) {
       let count = 0;
       let sx = 0;
       let sy = 0;
+      let sw = 0;
+      let qsum = 0;
       let minX = gx;
       let maxX = gx;
       let minY = gy;
@@ -747,10 +865,14 @@ function bestBlob(mask, cols, rows, x0, y0, step, locked) {
       while (head < qx.length) {
         const cx = qx[head];
         const cy = qy[head];
+        const qi = cy * cols + cx;
+        const qw = Math.max(quality[qi], 1);
         head += 1;
         count += 1;
-        sx += x0 + cx * step;
-        sy += y0 + cy * step;
+        sx += (x0 + cx * step) * qw;
+        sy += (y0 + cy * step) * qw;
+        sw += qw;
+        qsum += qw;
         minX = Math.min(minX, cx);
         maxX = Math.max(maxX, cx);
         minY = Math.min(minY, cy);
@@ -767,21 +889,33 @@ function bestBlob(mask, cols, rows, x0, y0, step, locked) {
       }
 
       if (count < 8) continue;
-      const bx = sx / count;
-      const by = sy / count;
+      const bx = sx / Math.max(sw, 1);
+      const by = sy / Math.max(sw, 1);
       const width = (maxX - minX + 1) * step;
       const height = (maxY - minY + 1) * step;
       const aspect = Math.max(width, height) / Math.max(Math.min(width, height), step);
-      if (aspect > 3.2) continue;
+      if (aspect > 4.5) continue;
+      if (width > frameW * 0.45 || height > frameH * 0.45) continue;
 
-      let score = count;
+      const boxCells = (maxX - minX + 1) * (maxY - minY + 1);
+      const density = count / Math.max(boxCells, 1);
+      if (density < 0.12) continue;
+
+      const avgQ = qsum / Math.max(count, 1) / 1000;
+      const aspectScore = 1 / aspect;
+      const densityScore = clamp((density - 0.12) / 0.55, 0, 1);
+      const areaScore = Math.sqrt(count);
+      let score = areaScore * 42 + avgQ * 120 + densityScore * 50 + aspectScore * 40;
       if (locked && app.lastPos) {
         const d = Math.hypot(bx - app.lastPos.x, by - app.lastPos.y);
-        if (d > app.maxJump) continue;
-        score = count - d * 0.9;
+        score += Math.max(0, 85 - d * 0.55);
+      }
+      if (app.targetSeed) {
+        const d = Math.hypot(bx - app.targetSeed.x, by - app.targetSeed.y);
+        score += Math.max(0, 140 - d * 0.7);
       }
 
-      if (!best || score > best.score) best = { x: bx, y: by, count, score };
+      if (!best || score > best.score) best = { x: bx, y: by, count, score, confidence: avgQ };
     }
   }
   return best;
@@ -796,21 +930,47 @@ function inBand(hsv, lo, hi) {
 }
 
 function matchColor(hsv) {
+  return colorQuality(hsv) > 0;
+}
+
+function colorQuality(hsv) {
   // A picked color (with optional hue-wraparound second band) overrides presets.
   if (app.markerHsv) {
     const m = app.markerHsv;
-    return inBand(hsv, m.lo, m.hi) || (m.lo2 && inBand(hsv, m.lo2, m.hi2));
+    const matched = inBand(hsv, m.lo, m.hi) || (m.lo2 && inBand(hsv, m.lo2, m.hi2));
+    if (!matched) return 0;
+    const hScore = clamp(1 - hueDistance(hsv[0], m.h) / Math.max(m.hTol, 1), 0, 1);
+    const sScore = clamp((hsv[1] - m.sLo) / Math.max(255 - m.sLo, 1), 0, 1);
+    const vScore = clamp((hsv[2] - m.vLo) / Math.max(255 - m.vLo, 1), 0, 1);
+    return Math.round((0.58 * hScore + 0.27 * sScore + 0.15 * vScore) * 1000);
   }
-  const [lo, hi] = colorPresets[els.color.value] || colorPresets.orange;
-  if (inBand(hsv, lo, hi)) return true;
+
   if (els.color.value === "red") {
-    return hsv[0] >= 170 && hsv[0] <= 180 && hsv[1] >= lo[1] && hsv[2] >= lo[2];
+    const d = Math.min(hsv[0], 180 - hsv[0]);
+    if (d > 14 || hsv[1] < 85 || hsv[2] < 55) return 0;
+    const hScore = clamp(1 - d / 14, 0, 1);
+    const sScore = clamp((hsv[1] - 85) / 170, 0, 1);
+    const vScore = clamp((hsv[2] - 55) / 200, 0, 1);
+    return Math.round((0.52 * hScore + 0.30 * sScore + 0.18 * vScore) * 1000);
   }
-  return false;
+
+  const [lo, hi] = colorPresets[els.color.value] || colorPresets.orange;
+  if (!inBand(hsv, lo, hi)) return 0;
+  const hMid = (lo[0] + hi[0]) / 2;
+  const hTol = Math.max((hi[0] - lo[0]) / 2, 1);
+  const hScore = clamp(1 - Math.abs(hsv[0] - hMid) / hTol, 0, 1);
+  const sScore = clamp((hsv[1] - lo[1]) / Math.max(255 - lo[1], 1), 0, 1);
+  const vScore = clamp((hsv[2] - lo[2]) / Math.max(255 - lo[2], 1), 0, 1);
+  return Math.round((0.55 * hScore + 0.25 * sScore + 0.20 * vScore) * 1000);
+}
+
+function hueDistance(a, b) {
+  const d = Math.abs(a - b);
+  return Math.min(d, 180 - d);
 }
 
 function pickColorAt(px, py) {
-  const half = 8;
+  const half = 12;
   const x0 = Math.max(0, Math.round(px) - half);
   const y0 = Math.max(0, Math.round(py) - half);
   const w = Math.min(canvas.width, Math.round(px) + half) - x0;
@@ -823,15 +983,24 @@ function pickColorAt(px, py) {
   const vs = [];
   for (let i = 0; i < d.length; i += 4) {
     const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
+    if (hsv[1] < 55 || hsv[2] < 35) continue;
     hs.push(hsv[0]);
     ss.push(hsv[1]);
     vs.push(hsv[2]);
+  }
+  if (hs.length < 8) {
+    for (let i = 0; i < d.length; i += 4) {
+      const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
+      hs.push(hsv[0]);
+      ss.push(hsv[1]);
+      vs.push(hsv[2]);
+    }
   }
   const median = (arr) => {
     arr.sort((a, b) => a - b);
     return arr[Math.floor(arr.length / 2)];
   };
-  const hMed = median(hs);
+  const hMed = circularHueMean(hs);
   const sMed = median(ss);
   const vMed = median(vs);
 
@@ -839,13 +1008,13 @@ function pickColorAt(px, py) {
   // a lot as the bob moves between lit and shadowed parts of its arc, so allow a
   // wide V (and looser S) floor. The tight hue + connected-component + spatial
   // lock keep background out despite the permissive brightness range.
-  const hTol = 10;
-  const sLo = Math.max(45, sMed - 110);
-  const vLo = Math.max(30, vMed - 150);
+  const hTol = 13;
+  const sLo = Math.max(60, sMed - 85);
+  const vLo = Math.max(40, vMed - 130);
   const loH = hMed - hTol;
   const hiH = hMed + hTol;
 
-  const m = { lo: null, hi: null, lo2: null, hi2: null };
+  const m = { lo: null, hi: null, lo2: null, hi2: null, h: hMed, hTol, sLo, vLo };
   if (loH < 0) {
     m.lo = [0, sLo, vLo];
     m.hi = [hiH, 255, 255];
@@ -861,10 +1030,25 @@ function pickColorAt(px, py) {
     m.hi = [hiH, 255, 255];
   }
   app.markerHsv = m;
+  app.targetSeed = { x: px, y: py };
   app.lastPos = { x: px, y: py };
   app.smoothPos = { x: px, y: py };
   app.lostFrames = 0;
   setStatus(`SAMPLED H=${Math.round(hMed)}`, true);
+}
+
+function circularHueMean(values) {
+  if (!values.length) return 0;
+  let sx = 0;
+  let sy = 0;
+  for (const h of values) {
+    const a = h * Math.PI / 90;
+    sx += Math.cos(a);
+    sy += Math.sin(a);
+  }
+  let angle = Math.atan2(sy / values.length, sx / values.length);
+  if (angle < 0) angle += Math.PI * 2;
+  return angle * 90 / Math.PI;
 }
 
 function rgbToHsv(r, g, b) {
@@ -1554,12 +1738,34 @@ function inv2(A) {
   ];
 }
 
+function handleSelectedVideoFile(file) {
+  if (!file) return;
+  startVideoFile(file).catch((err) => setStatus(err.message, false));
+}
+
 els.startCamera.addEventListener("click", () => startCamera().catch((err) => setStatus(err.message, false)));
 els.phoneCamera.addEventListener("click", startPhoneCamera);
-els.uploadVideo.addEventListener("click", () => els.videoFile.click());
+els.uploadVideo.addEventListener("click", () => setStatus("SELECT FILE", false));
+els.uploadVideo.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" || ev.key === " ") {
+    ev.preventDefault();
+    setStatus("SELECT FILE", false);
+    els.videoFile.click();
+  }
+});
 els.videoFile.addEventListener("change", (ev) => {
   const file = ev.target.files && ev.target.files[0];
-  if (file) startVideoFile(file).catch((err) => setStatus(err.message, false));
+  handleSelectedVideoFile(file);
+  ev.target.value = "";
+});
+els.cameraPanel.addEventListener("dragover", (ev) => {
+  ev.preventDefault();
+  setStatus("DROP VIDEO", false);
+});
+els.cameraPanel.addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+  handleSelectedVideoFile(file);
 });
 els.pickColor.addEventListener("click", startPickColor);
 els.calibrate.addEventListener("click", startCalibration);
@@ -1571,6 +1777,12 @@ els.experiment.addEventListener("change", () => {
   resetExperiment();
   updateExperimentUi();
   els.equationOutput.textContent = experimentNote();
+});
+els.color.addEventListener("change", () => {
+  app.markerHsv = null;
+  app.targetSeed = null;
+  resetExperiment();
+  setStatus(`COLOR ${els.color.value.toUpperCase()}`, false);
 });
 document.addEventListener("keydown", (ev) => {
   if (ev.key.toLowerCase() === "p") startPickColor();

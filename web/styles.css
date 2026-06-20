@@ -32,7 +32,8 @@ body {
 
 button,
 select,
-input {
+input,
+.buttonLike {
   font: inherit;
 }
 
@@ -119,25 +120,38 @@ input {
   background: #0f1113;
 }
 
-button {
+button,
+.buttonLike {
   border: 1px solid #3a4047;
   border-radius: 2px;
   background: #171a1d;
   color: #e1e5e8;
   padding: 8px 6px;
   cursor: pointer;
+  text-align: center;
+  user-select: none;
 }
 
-button:hover {
+button:hover,
+.buttonLike:hover {
   background: #1d2125;
   border-color: var(--accent);
 }
 
-button:disabled {
+button:disabled,
+.buttonLike.disabled {
   color: #626a73;
   border-color: #282d32;
   background: #111416;
   cursor: not-allowed;
+}
+
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .controls {
