@@ -15,7 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from smoother import KinematicSmoother, estimate_measurement_noise
-from neural_ode import _simulate
+from neural_ode import _simulate, train_neural_ode, predict_trajectory
 
 plt.rcParams.update({"figure.dpi": 150, "font.size": 11, "axes.grid": True,
                      "grid.alpha": 0.25, "axes.titlesize": 12})
@@ -132,6 +132,25 @@ def main():
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     fig.savefig("fig3_generality.png")
     print("saved fig3_generality.png")
+
+    # ---------- Figure 4: generalization (learns dynamics, not memorizes) ----------
+    tg, thg2, omg2 = _simulate(g=9.81, L=0.7, gamma=0.2, theta0=1.31, fps=60, duration=8)
+    acc_g = -(9.81 / 0.7) * np.sin(thg2) - 0.2 * omg2
+    func = train_neural_ode(tg, thg2, omg2, accel=acc_g, iters=1200, verbose=False)
+    tu, thu, _ = _simulate(g=9.81, L=0.7, gamma=0.2, theta0=0.70, fps=60, duration=6)
+    pred = predict_trajectory(func, tu, 0.70, 0.0, max_points=len(tu))
+    pp = np.array(pred["pos"]); tp = np.array(pred["t"])
+    err = np.degrees(pp - thu[:len(pp)])
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(tu, np.degrees(thu), color="#888", lw=3.2, alpha=0.55, label="true (unseen IC, 40°)")
+    ax.plot(tp, np.degrees(pp), "--", color="#e8533d", lw=1.6, label="Neural ODE prediction")
+    ax.set(title="Generalization: predict an UNSEEN initial condition\n"
+                 f"(trained only on 75°, then asked to predict 40°)   RMSE = {np.sqrt(np.mean(err**2)):.2f}°",
+           xlabel="time (s)", ylabel="θ (deg)")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig("fig4_generalization.png")
+    print("saved fig4_generalization.png")
 
 
 if __name__ == "__main__":
