@@ -794,31 +794,17 @@ function trackMarker() {
     return { detected: false, area: blob ? blob.count * step * step : 0 };
   }
 
-  const refined = refineSubpixelCentroid(data, W, Hh, blob, step);
-  let cx = refined?.x ?? blob.x;
-  let cy = refined?.y ?? blob.y;
+  let cx = blob.x;
+  let cy = blob.y;
   if (app.smoothPos) {
-    const jump = Math.hypot(cx - app.smoothPos.x, cy - app.smoothPos.y);
-    const jumpGate = isPendulumMode() ? 75 : app.maxJump;
-    if (locked && jump > jumpGate && app.lostFrames < Math.floor(app.reacquireAfter * 0.5)) {
-      app.lostFrames += 1;
-      return { detected: false, area: blob.count * step * step };
-    }
-    const alpha = locked && jump <= jumpGate ? 0.68 : 1.0;
+    const alpha = locked ? 0.68 : 1.0;
     cx = app.smoothPos.x * (1 - alpha) + cx * alpha;
     cy = app.smoothPos.y * (1 - alpha) + cy * alpha;
   }
   app.smoothPos = { x: cx, y: cy };
   app.lastPos = { x: cx, y: cy };
   app.lostFrames = 0;
-  return {
-    detected: true,
-    x: cx,
-    y: cy,
-    area: blob.count * step * step,
-    confidence: refined?.confidence ?? blob.confidence,
-    subpixel: Boolean(refined),
-  };
+  return { detected: true, x: cx, y: cy, area: blob.count * step * step };
 }
 
 function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frameH) {
@@ -877,53 +863,19 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
       if (count < 8) continue;
       const bx = sx / Math.max(sw, 1);
       const by = sy / Math.max(sw, 1);
-      const radiusScore = pendulumRadiusScore(bx, by);
-      if (radiusScore === null) continue;
       const width = (maxX - minX + 1) * step;
       const height = (maxY - minY + 1) * step;
       const aspect = Math.max(width, height) / Math.max(Math.min(width, height), step);
-      if (aspect > 8) continue;
-      if (width > frameW * 0.7 || height > frameH * 0.7) continue;
+      if (aspect > 4) continue;
 
-      const boxCells = (maxX - minX + 1) * (maxY - minY + 1);
-      const density = count / Math.max(boxCells, 1);
-      if (density < 0.05) continue;
-
-      const avgQ = qsum / Math.max(count, 1) / 1000;
-      const aspectScore = 1 / aspect;
-      const densityScore = clamp((density - 0.12) / 0.55, 0, 1);
-      const areaScore = Math.sqrt(count);
-      const boxAreaPx = width * height;
-      const expectedMaxArea = frameW * frameH * 0.015;
-      const oversizePenalty = Math.max(0, (boxAreaPx - expectedMaxArea) / Math.max(expectedMaxArea, 1));
-      let score = areaScore * 26 + avgQ * 170 + densityScore * 58 + aspectScore * 48 + radiusScore * 90 - oversizePenalty * 120;
+      let score = count;
       if (locked && app.lastPos) {
         const d = Math.hypot(bx - app.lastPos.x, by - app.lastPos.y);
-        const hardGate = app.targetSeedFrames > 0 ? 90 : Math.max(app.maxJump * 1.5, 130);
-        if (d > hardGate && app.lostFrames < Math.floor(app.reacquireAfter * 0.5)) continue;
-        score += Math.max(0, 260 - d * 1.35);
-      }
-      if (app.targetSeed) {
-        const d = Math.hypot(bx - app.targetSeed.x, by - app.targetSeed.y);
-        if (app.targetSeedFrames > 0 && d > 90) continue;
-        score += app.targetSeedFrames > 0
-          ? Math.max(0, 520 - d * 1.8)
-          : Math.max(0, 180 - d * 0.65);
+        if (d > app.maxJump) continue;
+        score = count - d * 0.9;
       }
 
-      if (!best || score > best.score) {
-        best = {
-          x: bx,
-          y: by,
-          count,
-          score,
-          confidence: avgQ,
-          minX: x0 + minX * step,
-          maxX: x0 + maxX * step,
-          minY: y0 + minY * step,
-          maxY: y0 + maxY * step,
-        };
-      }
+      if (!best || score > best.score) best = { x: bx, y: by, count, score };
     }
   }
   return best;
