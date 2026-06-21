@@ -202,7 +202,8 @@ def discover_from_series(t, pos_meas, frac=0.5, mode="pendulum"):
     w2_period = (2 * np.pi / period) ** 2 if period and period > 0 else float("nan")
 
     # Neural ODE + symbolic regression (generic)
-    func = train_neural_ode(tcut, pos, vel, iters=1500, lr=1.5e-3, window=10, verbose=False)
+    func = train_neural_ode(tcut, pos, vel, accel=accel, iters=1500, lr=1.5e-3,
+                            window=10, verbose=False)
     pg, vg, acc = sample_vector_field(func, pos, vel, n_grid=600)
     est, _, symbolic_backend = run_symbolic(pg, vg, acc)
     prediction = predict_trajectory(func, tcut, pos[0], vel[0])

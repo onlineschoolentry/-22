@@ -117,6 +117,6 @@ python discover_pipeline.py --synthetic
 Python · **PyTorch + torchdiffeq** (Neural ODE) · **PySR/gplearn** (기호회귀) · **OpenCV** (추적) · NumPy/SciPy/SymPy · 브라우저 JS(실시간 UI)
 
 ## 📝 핵심 결과 (검증됨)
-- 합성: Neural ODE 벡터필드 0.4% 오차, 기호회귀가 sin(θ) 복원
-- 실데이터 g/L: Neural ODE **38.96** / STLSQ **39.78** / 주기 **37.0** (3방법 일치)
+- 합성: Neural ODE가 g/L 0.95% 오차로 복원, 기호회귀가 sin(θ) 선택
+- 실데이터: `θ̈ = -37.27·sin(θ) - 0.091·ω` → g/L Neural ODE **37.27** / STLSQ **39.04** / 주기 **36.98** (3방법 일치)
 - 일반화: 학습 안 한 초기조건 예측 0.2° 오차

@@ -18,8 +18,6 @@ regression (stage 3) to recover an explicit equation such as
 
 from __future__ import annotations
 
-import argparse
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -58,18 +56,29 @@ class ODEFunc(nn.Module):
             return self.net(inp).squeeze(-1).numpy()
 
 
-def train_neural_ode(t, theta, omega, hidden=64, iters=600, window=12, batch=128,
-                     lr=5e-3, seed=0, verbose=True):
-    """Fit the neural vector field to a [theta, omega] trajectory."""
+def train_neural_ode(t, theta, omega, accel=None, accel_weight=25.0, hidden=64,
+                     iters=600, window=12, batch=128, lr=5e-3, seed=0, verbose=True):
+    """
+    Fit the neural vector field to a [theta, omega] trajectory.
+
+    If `accel` (the smoothed angular acceleration omega_dot) is given, an extra
+    supervision term anchors the field's d(omega)/dt to it. On noisy / low-fps
+    data, trajectory matching alone can converge to a field with the wrong
+    coefficient; the acceleration anchor keeps the learned g/L unbiased.
+    """
     torch.manual_seed(seed)
     t = np.asarray(t, dtype=np.float64)
     theta = np.asarray(theta, dtype=np.float64)
     omega = np.asarray(omega, dtype=np.float64)
 
     states = torch.tensor(np.stack([theta, omega], axis=-1), dtype=torch.float32)
-    tt = torch.tensor(t - t[0], dtype=torch.float32)
     n = len(t)
     dt = float(np.median(np.diff(t)))
+
+    use_accel = accel is not None
+    if use_accel:
+        accel_t = torch.tensor(np.asarray(accel, dtype=np.float64), dtype=torch.float32)
+        accel_var = float(np.var(accel)) + 1e-6
 
     func = ODEFunc(hidden, theta_scale=max(np.std(theta), 0.1),
                    omega_scale=max(np.std(omega), 0.1))
@@ -78,11 +87,16 @@ def train_neural_ode(t, theta, omega, hidden=64, iters=600, window=12, batch=128
     for it in range(1, iters + 1):
         starts = torch.randint(0, n - window, (batch,))
         x0 = states[starts]                                   # (batch, 2)
-        # integrate each window on a shared local time grid
         tlocal = torch.arange(window, dtype=torch.float32) * dt
         pred = odeint(func, x0, tlocal, method="rk4")         # (window, batch, 2)
         target = torch.stack([states[starts + k] for k in range(window)])
         loss = ((pred - target) ** 2).mean()
+
+        if use_accel:
+            idx = torch.randint(0, n, (batch,))
+            field = func(0.0, states[idx])                    # [omega, domega/dt]
+            loss = loss + accel_weight * ((field[:, 1] - accel_t[idx]) ** 2).mean() / accel_var
+
         opt.zero_grad()
         loss.backward()
         opt.step()
