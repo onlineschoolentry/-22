@@ -799,7 +799,12 @@ function trackMarker() {
   let cy = refined?.y ?? blob.y;
   if (app.smoothPos) {
     const jump = Math.hypot(cx - app.smoothPos.x, cy - app.smoothPos.y);
-    const alpha = locked && jump <= app.maxJump ? 0.68 : 1.0;
+    const jumpGate = isPendulumMode() ? 75 : app.maxJump;
+    if (locked && jump > jumpGate && app.lostFrames < Math.floor(app.reacquireAfter * 0.5)) {
+      app.lostFrames += 1;
+      return { detected: false, area: blob.count * step * step };
+    }
+    const alpha = locked && jump <= jumpGate ? 0.68 : 1.0;
     cx = app.smoothPos.x * (1 - alpha) + cx * alpha;
     cy = app.smoothPos.y * (1 - alpha) + cy * alpha;
   }
@@ -872,6 +877,8 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
       if (count < 8) continue;
       const bx = sx / Math.max(sw, 1);
       const by = sy / Math.max(sw, 1);
+      const radiusScore = pendulumRadiusScore(bx, by);
+      if (radiusScore === null) continue;
       const width = (maxX - minX + 1) * step;
       const height = (maxY - minY + 1) * step;
       const aspect = Math.max(width, height) / Math.max(Math.min(width, height), step);
@@ -889,16 +896,16 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
       const boxAreaPx = width * height;
       const expectedMaxArea = frameW * frameH * 0.015;
       const oversizePenalty = Math.max(0, (boxAreaPx - expectedMaxArea) / Math.max(expectedMaxArea, 1));
-      let score = areaScore * 26 + avgQ * 170 + densityScore * 58 + aspectScore * 48 - oversizePenalty * 120;
+      let score = areaScore * 26 + avgQ * 170 + densityScore * 58 + aspectScore * 48 + radiusScore * 90 - oversizePenalty * 120;
       if (locked && app.lastPos) {
         const d = Math.hypot(bx - app.lastPos.x, by - app.lastPos.y);
-        const hardGate = app.targetSeedFrames > 0 ? 260 : Math.max(app.maxJump * 2.4, 180);
+        const hardGate = app.targetSeedFrames > 0 ? 90 : Math.max(app.maxJump * 1.5, 130);
         if (d > hardGate && app.lostFrames < Math.floor(app.reacquireAfter * 0.5)) continue;
         score += Math.max(0, 260 - d * 1.35);
       }
       if (app.targetSeed) {
         const d = Math.hypot(bx - app.targetSeed.x, by - app.targetSeed.y);
-        if (app.targetSeedFrames > 0 && d > 260) continue;
+        if (app.targetSeedFrames > 0 && d > 90) continue;
         score += app.targetSeedFrames > 0
           ? Math.max(0, 520 - d * 1.8)
           : Math.max(0, 180 - d * 0.65);
@@ -920,6 +927,15 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
     }
   }
   return best;
+}
+
+function pendulumRadiusScore(x, y) {
+  if (!isPendulumMode() || !app.pivot || !app.stringPixels || app.stringPixels < 20) return 0;
+  const r = Math.hypot(x - app.pivot.x, y - app.pivot.y);
+  const err = Math.abs(r - app.stringPixels);
+  const gate = Math.max(70, app.stringPixels * 0.22);
+  if (err > gate) return null;
+  return 1 - err / gate;
 }
 
 function refineSubpixelCentroid(data, W, Hh, blob, step) {
