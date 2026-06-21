@@ -44,7 +44,7 @@ const colorPresets = {
   blue: [[100, 120, 80], [130, 255, 255]],
   yellow: [[20, 100, 100], [35, 255, 255]],
   magenta: [[140, 80, 80], [170, 255, 255]],
-  pink: [[140, 60, 120], [172, 255, 255]],
+  pink: [[145, 90, 105], [175, 255, 255]],
 };
 
 const experimentProfiles = {
@@ -886,17 +886,22 @@ function bestBlob(mask, quality, cols, rows, x0, y0, step, locked, frameW, frame
       const aspectScore = 1 / aspect;
       const densityScore = clamp((density - 0.12) / 0.55, 0, 1);
       const areaScore = Math.sqrt(count);
-      let score = areaScore * 42 + avgQ * 120 + densityScore * 50 + aspectScore * 40;
+      const boxAreaPx = width * height;
+      const expectedMaxArea = frameW * frameH * 0.015;
+      const oversizePenalty = Math.max(0, (boxAreaPx - expectedMaxArea) / Math.max(expectedMaxArea, 1));
+      let score = areaScore * 26 + avgQ * 170 + densityScore * 58 + aspectScore * 48 - oversizePenalty * 120;
       if (locked && app.lastPos) {
         const d = Math.hypot(bx - app.lastPos.x, by - app.lastPos.y);
-        score += Math.max(0, 85 - d * 0.55);
+        const hardGate = app.targetSeedFrames > 0 ? 260 : Math.max(app.maxJump * 2.4, 180);
+        if (d > hardGate && app.lostFrames < Math.floor(app.reacquireAfter * 0.5)) continue;
+        score += Math.max(0, 260 - d * 1.35);
       }
       if (app.targetSeed) {
         const d = Math.hypot(bx - app.targetSeed.x, by - app.targetSeed.y);
-        if (app.targetSeedFrames > 0 && d > 400) continue;
+        if (app.targetSeedFrames > 0 && d > 260) continue;
         score += app.targetSeedFrames > 0
-          ? Math.max(0, 320 - d * 1.05)
-          : Math.max(0, 120 - d * 0.45);
+          ? Math.max(0, 520 - d * 1.8)
+          : Math.max(0, 180 - d * 0.65);
       }
 
       if (!best || score > best.score) {
@@ -980,6 +985,15 @@ function colorQuality(hsv) {
     const sScore = clamp((hsv[1] - 85) / 170, 0, 1);
     const vScore = clamp((hsv[2] - 55) / 200, 0, 1);
     return Math.round((0.52 * hScore + 0.30 * sScore + 0.18 * vScore) * 1000);
+  }
+
+  if (els.color.value === "pink") {
+    const d = hueDistance(hsv[0], 160);
+    if (d > 18 || hsv[1] < 85 || hsv[2] < 70) return 0;
+    const hScore = clamp(1 - d / 18, 0, 1);
+    const sScore = clamp((hsv[1] - 85) / 170, 0, 1);
+    const vScore = clamp((hsv[2] - 70) / 185, 0, 1);
+    return Math.round((0.64 * hScore + 0.26 * sScore + 0.10 * vScore) * 1000);
   }
 
   const [lo, hi] = colorPresets[els.color.value] || colorPresets.orange;
@@ -1780,6 +1794,8 @@ function handleCanvasClick(ev) {
     resetExperiment();
     // Seed the spatial lock at the clicked bob (after reset, which clears it) so
     // tracking grabs the bob and ignores larger same-hue regions like the face.
+    app.targetSeed = { x: p.x, y: p.y };
+    app.targetSeedFrames = 140;
     app.lastPos = { x: p.x, y: p.y };
     app.smoothPos = { x: p.x, y: p.y };
     app.lostFrames = 0;
