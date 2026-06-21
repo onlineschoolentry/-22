@@ -1,6 +1,6 @@
 """Local launcher for the web-based measurement console.
 
-The project now uses the browser UI as the local program UI. Running this file
+The project uses the browser UI as the local program UI. Running this file
 starts the local backend and opens the existing web console in the default
 browser.
 """
@@ -40,7 +40,7 @@ def open_browser_later(url: str, delay: float = 0.7) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="로컬 웹 UI 실행기")
-    parser.add_argument("--host", default="127.0.0.1", help="로컬 실행 기본값은 127.0.0.1")
+    parser.add_argument("--host", default="127.0.0.1", help="로컬 실행 주소. 기본값은 127.0.0.1")
     parser.add_argument("--port", type=int, default=8843, help="선호 포트")
     parser.add_argument("--no-open", action="store_true", help="브라우저를 자동으로 열지 않음")
     return parser.parse_args()

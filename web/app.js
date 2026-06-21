@@ -57,7 +57,7 @@ const experimentProfiles = {
     velocity: ["omega", "rad/s"],
     acceleration: ["alpha", "rad/s^2"],
     readout: "pendulum",
-    equation: "STLSQ濡?theta_ddot = f(theta, omega)瑜?異붿젙?⑸땲??",
+    equation: "STLSQ로 theta_ddot = f(theta, omega)를 추정합니다.",
   },
   freefall: {
     estimator: "motion2d",
@@ -68,7 +68,7 @@ const experimentProfiles = {
     velocity: ["vy", "m/s"],
     acceleration: ["ay", "m/s^2"],
     readout: "vertical",
-    equation: "媛?띾룄 ay???됯퇏媛믪쑝濡?以묐젰媛?띾룄 g瑜?寃?좏빀?덈떎.",
+    equation: "가속도 ay의 평균값으로 중력가속도 g를 검증합니다.",
   },
   projectile: {
     estimator: "motion2d",
@@ -79,7 +79,7 @@ const experimentProfiles = {
     velocity: ["speed", "m/s"],
     acceleration: ["|a|", "m/s^2"],
     readout: "motion2d",
-    equation: "x-y 沅ㅼ쟻, ?띾룄, 媛?띾룄 蹂?붾? ?ㅼ떆媛?痢≪젙?⑸땲??",
+    equation: "x-y 궤적, 속도, 가속도 변화를 실시간 측정합니다.",
   },
   linear_motion: {
     estimator: "motion2d",
@@ -90,7 +90,7 @@ const experimentProfiles = {
     velocity: ["vx", "m/s"],
     acceleration: ["ax", "m/s^2"],
     readout: "motion2d",
-    equation: "吏덈웾 ?낅젰媛믪쑝濡?F = ma瑜??④퍡 怨꾩궛?⑸땲??",
+    equation: "질량 입력값으로 F = ma를 함께 계산합니다.",
   },
   spring_mass: {
     estimator: "motion2d",
@@ -101,7 +101,7 @@ const experimentProfiles = {
     velocity: ["vx", "m/s"],
     acceleration: ["ax", "m/s^2"],
     readout: "motion2d",
-    equation: "?됲삎??湲곗? 蹂?? ?띾룄, 媛?띾룄 ?쒓퀎?댁쓣 痢≪젙?⑸땲??",
+    equation: "평형점 기준 변위, 속도, 가속도 시계열을 측정합니다.",
   },
   circular_motion: {
     estimator: "motion2d",
@@ -112,7 +112,7 @@ const experimentProfiles = {
     velocity: ["speed", "m/s"],
     acceleration: ["|a|", "m/s^2"],
     readout: "motion2d",
-    equation: "?띾젰怨?媛?띾룄 ?ш린濡?援ъ떖媛?띾룄 異붿꽭瑜??뺤씤?⑸땲??",
+    equation: "속력과 가속도 크기로 구심가속도 추세를 확인합니다.",
   },
   motion2d: {
     estimator: "motion2d",
@@ -123,7 +123,7 @@ const experimentProfiles = {
     velocity: ["vx", "m/s"],
     acceleration: ["ax", "m/s^2"],
     readout: "motion2d",
-    equation: "踰붿슜 2D ?꾩튂, ?띾룄, 媛?띾룄, ??痢≪젙 紐⑤뱶?낅땲??",
+    equation: "범용 2D 위치, 속도, 가속도, 힘 측정 모드입니다.",
   },
 };
 
@@ -1215,24 +1215,24 @@ function drawCross(x, y, r) {
 }
 
 function calibrationMessage() {
-  if (app.calibration === "pendulumLeftAnchor") return "[蹂댁젙] ?쇱そ ?곷떒 怨좎젙?먯쓣 ?대┃";
-  if (app.calibration === "pendulumRightAnchor") return "[蹂댁젙] ?ㅻⅨ履??곷떒 怨좎젙?먯쓣 ?대┃";
-  if (app.calibration === "pendulumBob") return "[蹂댁젙] ?뺤? ?곹깭 異?以묒떖???대┃";
-  if (app.calibration === "motionOrigin") return "[蹂댁젙] ?먯젏/?됲삎?먯쓣 ?대┃";
-  if (app.calibration === "motionScale") return "[蹂댁젙] 湲곗? 嫄곕━ ?앹젏???대┃";
+  if (app.calibration === "pendulumLeftAnchor") return "[보정] 왼쪽 상단 고정점을 클릭";
+  if (app.calibration === "pendulumRightAnchor") return "[보정] 오른쪽 상단 고정점을 클릭";
+  if (app.calibration === "pendulumBob") return "[보정] 정지 상태의 추 중심을 클릭";
+  if (app.calibration === "motionOrigin") return "[보정] 원점/평형점을 클릭";
+  if (app.calibration === "motionScale") return "[보정] 기준 거리 끝점을 클릭";
   return "";
 }
 
 function experimentCalibrationMessage() {
-  if (app.calibration === "pendulumLeftAnchor") return "[蹂댁젙] ?쇱そ 怨좎젙?먯쓣 ?대┃";
-  if (app.calibration === "pendulumRightAnchor") return "[蹂댁젙] ?ㅻⅨ履?怨좎젙?먯쓣 ?대┃";
-  if (app.calibration === "pendulumBob") return "[蹂댁젙] ?뺤???異붿쓽 以묒떖???대┃";
-  if (app.calibration === "motionOrigin" && isFreefallMode()) return "[蹂댁젙] ?숉븯 ?쒖옉??怨?以묒떖???대┃";
-  if (app.calibration === "motionScale" && isFreefallMode()) return "[蹂댁젙] ?꾨옒履?嫄곕━ 湲곗??먯쓣 ?대┃";
-  if (app.calibration === "motionOrigin" && isProjectileMode()) return "[蹂댁젙] 諛쒖궗 ?쒖옉??怨?以묒떖???대┃";
-  if (app.calibration === "motionScale" && isProjectileMode()) return "[蹂댁젙] 嫄곕━ 湲곗? ?앹젏???대┃";
-  if (app.calibration === "motionOrigin") return "[蹂댁젙] ?먯젏/?됲삎?먯쓣 ?대┃";
-  if (app.calibration === "motionScale") return "[蹂댁젙] 湲곗? 嫄곕━ ?앹젏???대┃";
+  if (app.calibration === "pendulumLeftAnchor") return "[보정] 왼쪽 고정점을 클릭";
+  if (app.calibration === "pendulumRightAnchor") return "[보정] 오른쪽 고정점을 클릭";
+  if (app.calibration === "pendulumBob") return "[보정] 핑크 추의 중심을 클릭";
+  if (app.calibration === "motionOrigin" && isFreefallMode()) return "[보정] 낙하 시작점의 중심을 클릭";
+  if (app.calibration === "motionScale" && isFreefallMode()) return "[보정] 아래쪽 거리 기준점을 클릭";
+  if (app.calibration === "motionOrigin" && isProjectileMode()) return "[보정] 발사 시작점의 중심을 클릭";
+  if (app.calibration === "motionScale" && isProjectileMode()) return "[보정] 거리 기준 끝점을 클릭";
+  if (app.calibration === "motionOrigin") return "[보정] 원점/평형점을 클릭";
+  if (app.calibration === "motionScale") return "[보정] 기준 거리 끝점을 클릭";
   return "";
 }
 
@@ -1974,10 +1974,10 @@ async function discoverEquation() {
     return;
   }
   if (app.history.length < 80) {
-    els.equationOutput.textContent = "?섑뵆??遺議깊빀?덈떎. 理쒖냼 8~12珥??뺣룄 湲곕줉?????ㅼ떆 ?ㅽ뻾?섏꽭??";
+    els.equationOutput.textContent = "샘플이 부족합니다. 최소 8~12초 정도 기록한 뒤 다시 실행하세요.";
     return;
   }
-  els.equationOutput.textContent = "遺꾩꽍 以?..";
+  els.equationOutput.textContent = "분석 중...";
   try {
     const res = await fetch("/api/discover", {
       method: "POST",
@@ -1998,7 +1998,7 @@ async function discoverEquation() {
       `q_jerk    : ${data.q_jerk.toExponential(3)}`,
     ].join("\n");
   } catch (err) {
-    els.equationOutput.textContent = `遺꾩꽍 ?ㅽ뙣: ${err.message}\nweb_server.py濡??ㅽ뻾 以묒씤吏 ?뺤씤?섏꽭??`;
+    els.equationOutput.textContent = `분석 실패: ${err.message}\nweb_server.py로 실행 중인지 확인하세요.`;
   }
 }
 
