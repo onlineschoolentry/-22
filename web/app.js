@@ -1029,7 +1029,7 @@ function hueDistance(a, b) {
 
 function pickColorAt(px, py) {
   drawCurrentSourceFrame();
-  const half = 12;
+  const half = 18;
   const x0 = Math.max(0, Math.round(px) - half);
   const y0 = Math.max(0, Math.round(py) - half);
   const w = Math.min(canvas.width, Math.round(px) + half) - x0;
@@ -1037,41 +1037,41 @@ function pickColorAt(px, py) {
   if (w <= 0 || h <= 0) return false;
 
   const d = ctx.getImageData(x0, y0, w, h).data;
-  const centerHues = [];
   const centerX = Math.round(px) - x0;
   const centerY = Math.round(py) - y0;
-  for (let yy = Math.max(0, centerY - 2); yy <= Math.min(h - 1, centerY + 2); yy++) {
-    for (let xx = Math.max(0, centerX - 2); xx <= Math.min(w - 1, centerX + 2); xx++) {
+  const candidates = [];
+  for (let yy = 0; yy < h; yy++) {
+    for (let xx = 0; xx < w; xx++) {
       const i = (yy * w + xx) * 4;
       const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
-      if (hsv[1] >= 45 && hsv[2] >= 35) centerHues.push(hsv[0]);
+      const dist = Math.hypot(xx - centerX, yy - centerY);
+      if (dist > half || hsv[1] < 70 || hsv[2] < 45) continue;
+      const centerWeight = 1 / (1 + dist * 0.35);
+      const colorWeight = (hsv[1] / 255) * Math.sqrt(hsv[2] / 255);
+      candidates.push({ hsv, weight: centerWeight * colorWeight, dist });
     }
   }
-  const centerHue = centerHues.length ? circularHueMean(centerHues) : null;
+  if (candidates.length < 8) {
+    setStatus("BAD SAMPLE", false);
+    return false;
+  }
+  candidates.sort((a, b) => b.weight - a.weight);
+  const core = candidates.slice(0, Math.min(40, candidates.length));
+  const hMed = circularWeightedHueMean(core.map((p) => [p.hsv[0], p.weight]));
   const hs = [];
   const ss = [];
   const vs = [];
-  for (let i = 0; i < d.length; i += 4) {
-    const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
-    if (hsv[1] < 55 || hsv[2] < 35) continue;
-    if (centerHue !== null && hueDistance(hsv[0], centerHue) > 22) continue;
-    hs.push(hsv[0]);
-    ss.push(hsv[1]);
-    vs.push(hsv[2]);
+  for (const p of candidates) {
+    if (hueDistance(p.hsv[0], hMed) > 12) continue;
+    hs.push(p.hsv[0]);
+    ss.push(p.hsv[1]);
+    vs.push(p.hsv[2]);
   }
-  if (hs.length < 8) {
-    for (let i = 0; i < d.length; i += 4) {
-      const hsv = rgbToHsv(d[i], d[i + 1], d[i + 2]);
-      hs.push(hsv[0]);
-      ss.push(hsv[1]);
-      vs.push(hsv[2]);
-    }
-  }
+  if (hs.length < 8) return false;
   const median = (arr) => {
     arr.sort((a, b) => a - b);
     return arr[Math.floor(arr.length / 2)];
   };
-  const hMed = circularHueMean(hs);
   const sMed = median(ss);
   const vMed = median(vs);
 
@@ -1084,9 +1084,9 @@ function pickColorAt(px, py) {
   // a lot as the bob moves between lit and shadowed parts of its arc, so allow a
   // wide V (and looser S) floor. The tight hue + connected-component + spatial
   // lock keep background out despite the permissive brightness range.
-  const hTol = 16;
-  const sLo = Math.max(40, sMed - 110);
-  const vLo = Math.max(25, vMed - 150);
+  const hTol = 12;
+  const sLo = Math.max(65, sMed - 70);
+  const vLo = Math.max(45, vMed - 95);
   const loH = hMed - hTol;
   const hiH = hMed + hTol;
 
@@ -1107,7 +1107,7 @@ function pickColorAt(px, py) {
   }
   app.markerHsv = m;
   app.targetSeed = { x: px, y: py };
-  app.targetSeedFrames = 90;
+  app.targetSeedFrames = isPendulumMode() ? 360 : 90;
   app.lastPos = { x: px, y: py };
   app.smoothPos = { x: px, y: py };
   app.lostFrames = 0;
@@ -1144,6 +1144,23 @@ function circularHueMean(values) {
     sy += Math.sin(a);
   }
   let angle = Math.atan2(sy / values.length, sx / values.length);
+  if (angle < 0) angle += Math.PI * 2;
+  return angle * 90 / Math.PI;
+}
+
+function circularWeightedHueMean(values) {
+  if (!values.length) return 0;
+  let sx = 0;
+  let sy = 0;
+  let sw = 0;
+  for (const [h, w] of values) {
+    const a = h * Math.PI / 90;
+    sx += Math.cos(a) * w;
+    sy += Math.sin(a) * w;
+    sw += w;
+  }
+  if (sw <= 0) return 0;
+  let angle = Math.atan2(sy / sw, sx / sw);
   if (angle < 0) angle += Math.PI * 2;
   return angle * 90 / Math.PI;
 }
@@ -1811,7 +1828,7 @@ function handleCanvasClick(ev) {
     // Seed the spatial lock at the clicked bob (after reset, which clears it) so
     // tracking grabs the bob and ignores larger same-hue regions like the face.
     app.targetSeed = { x: p.x, y: p.y };
-    app.targetSeedFrames = 140;
+    app.targetSeedFrames = 600;
     app.lastPos = { x: p.x, y: p.y };
     app.smoothPos = { x: p.x, y: p.y };
     app.lostFrames = 0;
